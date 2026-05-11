@@ -268,7 +268,7 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 		for _, sym := range spec.Routing.Symbols {
 			if slabFilter != nil {
 				if _, ok := slabFilter[sym]; !ok {
-					if !includeSentinels || !isSentinelSymbol(sym) {
+					if !includeSentinels || !IsSentinelSymbol(sym) {
 						continue
 					}
 				}
@@ -287,13 +287,13 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 			if err := inst.InitSymbol(initCtx, sym, nil); err != nil {
 				return nil, fmt.Errorf("bootstrap: strategy: failed to init %s symbol %s: %w", spec.ID, sym, err)
 			}
-			if isSentinelSymbol(sym) {
+			if IsSentinelSymbol(sym) {
 				invokeSentinelBootstrap(inst, sym, deps, shared.Clock())
 			}
 			router.Register(inst)
 			allSymbols[sym] = struct{}{}
 
-			if isSentinelSymbol(sym) {
+			if IsSentinelSymbol(sym) {
 				if extras := deps.SentinelExtraSymbols[spec.ID.String()]; len(extras) > 0 {
 					for _, ticker := range extras {
 						if err := inst.InitSymbol(initCtx, ticker, nil); err != nil {
@@ -338,12 +338,12 @@ func buildStrategyShard(shared *StrategyShared, slab []domain.Symbol, deps Strat
 	}, nil
 }
 
-// isSentinelSymbol recognizes symbols shaped like "__name__" used as routing
+// IsSentinelSymbol recognizes symbols shaped like "__name__" used as routing
 // keys for event-driven strategies that don't subscribe to per-symbol bars
 // (e.g. the copytrade strategy's "__copytrade__"). These strategies need a
 // runner instance somewhere to consume events, but do not participate in the
 // per-symbol slab distribution used by sharded bar dispatch.
-func isSentinelSymbol(sym string) bool {
+func IsSentinelSymbol(sym string) bool {
 	return strings.HasPrefix(sym, "__") && strings.HasSuffix(sym, "__") && len(sym) >= 4
 }
 

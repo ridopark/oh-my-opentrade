@@ -1034,7 +1034,14 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		}
 	}
 
-	// 5d. For exit intents, resolve the full position quantity from the broker.
+	// 5d. For exit intents, default the quantity to the broker's current
+	// position size — but preserve a deliberately partial intent.Quantity
+	// when one is set upstream (tiered_tp / time_partial / copytrade STC
+	// sized in positionmonitor/exit_eval.go). Pre-fix, this block stomped
+	// every exit to full, silently turning every partial close into a full
+	// close (see _workspace/copytrade_replay/fills.csv prior to 2026-05-11
+	// for the symptom). Zero quantity now rejects rather than degrading
+	// to full close so strategy bugs surface.
 	if intent.Direction.IsExit() {
 		positions, posErr := s.broker.GetPositions(ctx, event.TenantID, event.EnvMode)
 		if posErr != nil {
@@ -1096,7 +1103,29 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "position_gate: wrong_side_position"))
 			return nil
 		}
-		intent.Quantity = math.Abs(posQty)
+		posAbs := math.Abs(posQty)
+		intentQtyIn := intent.Quantity
+		switch {
+		case intent.Quantity <= 0:
+			// Reject — a zero-qty exit intent is a strategy bug, not a request
+			// for full close. Silently degrading to posAbs would mask the bug.
+			l.Warn().Float64("intent_qty", intent.Quantity).Float64("pos_abs", posAbs).Msg("exit intent has invalid qty — rejecting")
+			if s.positionGate != nil {
+				s.positionGate.ClearInflightExit(event.TenantID, event.EnvMode, intent.Symbol)
+			}
+			if s.metrics != nil {
+				s.metrics.Orders.RejectsTotal.WithLabelValues(s.brokerName, intent.Strategy, "partial_qty_invalid").Inc()
+			}
+			s.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, intent.ID.String(), domain.NewOrderIntentRejectedPayload(intent, "exit: partial_qty_invalid"))
+			return nil
+		case intent.Quantity > posAbs:
+			// Oversize clamp — broker truth wins. Prevents over-sell if
+			// monitor.pos.Quantity drifted high vs broker (silent fill,
+			// reconcile lag).
+			intent.Quantity = posAbs
+		default:
+			// Preserve deliberate partial sized upstream.
+		}
 		if intent.TimeInForce == "" {
 			intent.TimeInForce = "ioc"
 			buffer := exitLimitBuffer(intent.Symbol, intent.AssetClass)
@@ -1108,7 +1137,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 				intent.LimitPrice *= (1 - buffer)
 			}
 		}
-		l.Info().Float64("exit_qty", intent.Quantity).Str("pos_side", posSide).Float64("exit_buffer_bps", exitLimitBuffer(intent.Symbol, intent.AssetClass)*10000).Msg("resolved exit quantity from broker position")
+		l.Info().Float64("exit_qty", intent.Quantity).Float64("intent_qty_in", intentQtyIn).Float64("pos_abs", posAbs).Str("pos_side", posSide).Float64("exit_buffer_bps", exitLimitBuffer(intent.Symbol, intent.AssetClass)*10000).Msg("resolved exit quantity from broker position")
 	}
 
 	// 5e. Cancel stale open buy orders for this symbol to prevent position doubling and wash trades.
@@ -1167,6 +1196,18 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 	submitStart := s.nowFn()
+	// DecidedAt is the sim-time the strategy emitted this intent, not the
+	// async-handler-runtime sim time. handleIntent is SubscribeAsync (see
+	// line ~235); s.nowFn() reads the latest atomically-stored bar tick at
+	// handler runtime, which can race the actual publish moment. The bus
+	// event carries OccurredAt set by the publisher (NewBacktestEvent),
+	// which IS the publish moment. Prefer that; fall back to submitStart
+	// for events with zero OccurredAt (defensive; live path or test stubs).
+	decidedAt := event.OccurredAt
+	if decidedAt.IsZero() {
+		decidedAt = submitStart
+	}
+	intent.DecidedAt = decidedAt
 	if parity.Enabled() {
 		l.Info().
 			Str("stage", parity.StageOrderSubmitted).
@@ -1542,7 +1583,11 @@ func (s *Service) handleCopytradeEntryExpired(ctx context.Context, event domain.
 	if !ok {
 		return fmt.Errorf("execution: invalid payload for CopytradeEntryExpired: %T", event.Payload)
 	}
-	var toCancel []string
+	type cancelTarget struct {
+		brokerOrderID string
+		po            *pendingOrder
+	}
+	var toCancel []cancelTarget
 	s.pendingOrders.Range(func(key, value any) bool {
 		brokerOrderID := key.(string)
 		po := value.(*pendingOrder)
@@ -1555,23 +1600,35 @@ func (s *Service) handleCopytradeEntryExpired(ctx context.Context, event domain.
 		if string(po.intent.Symbol) != payload.ContractSymbol {
 			return true
 		}
-		toCancel = append(toCancel, brokerOrderID)
+		toCancel = append(toCancel, cancelTarget{brokerOrderID: brokerOrderID, po: po})
 		return true
 	})
-	for _, brokerOrderID := range toCancel {
-		if err := s.broker.CancelOrder(ctx, brokerOrderID); err != nil {
+	for _, t := range toCancel {
+		if err := s.broker.CancelOrder(ctx, t.brokerOrderID); err != nil {
 			s.log.Error().Err(err).
-				Str("broker_order_id", brokerOrderID).
+				Str("broker_order_id", t.brokerOrderID).
 				Str("contract_symbol", payload.ContractSymbol).
 				Float64("age_seconds", payload.AgeSeconds).
 				Msg("execution: failed to cancel expired copytrade BTO")
 			continue
 		}
 		s.log.Warn().
-			Str("broker_order_id", brokerOrderID).
+			Str("broker_order_id", t.brokerOrderID).
 			Str("contract_symbol", payload.ContractSymbol).
 			Float64("age_seconds", payload.AgeSeconds).
 			Msg("execution: canceled expired copytrade BTO")
+		// Emit StaleOrderCancelled so SignalTracker writes a status=canceled
+		// lifecycle row. Without this, copytrade BTOs canceled via the strategy
+		// TTL path leave the signal stuck at "validated" on the dashboard,
+		// unlike orders canceled via the reconcile-loop stale path.
+		s.emit(ctx, domain.EventStaleOrderCancelled, t.po.tenantID, t.po.envMode, t.brokerOrderID, domain.StaleOrderCancelledPayload{
+			Symbol:        t.po.intent.Symbol,
+			BrokerOrderID: t.brokerOrderID,
+			Strategy:      t.po.intent.Strategy,
+			Direction:     string(t.po.intent.Direction),
+			AgeSeconds:    time.Since(t.po.submitStart).Seconds(),
+			LimitPrice:    t.po.intent.LimitPrice,
+		})
 	}
 	return nil
 }

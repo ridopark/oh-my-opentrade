@@ -2095,6 +2095,13 @@ func (r *Runner) Run(ctx context.Context) error {
 				r.infra.EventBus.Flush()
 			}
 		}
+		// Sweep expired option positions every tick regardless of aggregation
+		// mode. SimBroker is the source of truth for open positions; the
+		// strategy may not have an exit rule that fires on expiry day.
+		if r.infra.SimBroker != nil {
+			r.infra.SimBroker.ExpireOptions(ctx, minTime)
+			r.infra.EventBus.Flush()
+		}
 
 		// Emit progress at most ~5 times/sec (200ms gate).
 		if time.Since(r.lastEmitTime) > 200*time.Millisecond || sh.Len() == 0 {
@@ -2177,6 +2184,9 @@ backtestComplete:
 	if posMonBundle.Service != nil && !lastBarTime.IsZero() {
 		lastClose := domain.CalendarFor(domain.AssetClassEquity).SessionClose(lastBarTime)
 		posMonBundle.Service.EvalExitRules(lastClose)
+		if r.infra.SimBroker != nil {
+			r.infra.SimBroker.ExpireOptions(ctx, lastClose)
+		}
 		r.infra.EventBus.Flush()
 	}
 
@@ -2204,7 +2214,8 @@ backtestComplete:
 		summary = summary.
 			Int64("impact_applied", is.Applied).
 			Int64("impact_noop", is.NoOp).
-			Int64("impact_cap_reject", is.CapReject)
+			Int64("impact_cap_reject", is.CapReject).
+			Int64("options_expired_missing_underlying", r.infra.SimBroker.OptionsExpiredMissingUnderlying())
 	}
 	summary.Msg("backtest data-quality summary")
 
@@ -2726,6 +2737,13 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	c.eventBus.Flush()
 	if c.posMonSvc != nil {
 		c.posMonSvc.EvalExitRules(tickTime)
+		c.eventBus.Flush()
+	}
+	// Sweep expired option positions every tick. SimBroker is the source of
+	// truth for open positions; copytrade has no exit rule that fires on
+	// expiry day, so without this sweep ITM options leak past their expiry.
+	if c.sim != nil {
+		c.sim.ExpireOptions(ctx, tickTime)
 		c.eventBus.Flush()
 	}
 	if c.copytradeReplay != nil {

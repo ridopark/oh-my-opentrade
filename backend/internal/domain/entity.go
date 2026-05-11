@@ -111,6 +111,15 @@ type OrderIntent struct {
 	// pre-Sprint-5 behavior for every existing code path.
 	Legs      []ComboLeg `json:"legs,omitempty"`
 	ComboType ComboType  `json:"comboType,omitempty"`
+
+	// DecidedAt is the sim-time (backtest) or wall-time (live) at which the
+	// orchestrator decided to submit this intent. SimBroker uses it to stamp
+	// FilledAt on synchronous fills; live brokers ignore it (their fill time
+	// comes from the broker's own confirmation). Zero value is permitted
+	// during the transition window; SimBroker logs a debug line and falls
+	// back to its cached bar time. Tracked for mandatory non-zero enforcement
+	// in a follow-up PR.
+	DecidedAt time.Time `json:"decidedAt,omitempty"`
 }
 
 // ResolvedVenue returns the explicit Venue when set, otherwise the implicit

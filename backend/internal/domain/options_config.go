@@ -10,6 +10,7 @@ type OptionsConfig struct {
 	LimitSpreadPct  *float64                                `toml:"limit_spread_pct"`  // limit = mid + X * spread (default 0.6 = 60%)
 	LimitBufferBPS  *int                                    `toml:"limit_buffer_bps"`  // fallback when spread=0: ask * (1 + bps/10000) (default 300 = 3%)
 	StaleCancelSecs *int                                    `toml:"stale_cancel_secs"` // cancel unfilled option orders after N seconds (default 60)
+	PaperFillAtAsk  bool                                    `toml:"paper_fill_at_ask"` // in paper-pinned BTO path, fill at min(live_ask, cap) instead of always at cap (default false)
 }
 
 // ContractSelectionConstraints holds all parameters for filtering and selecting

@@ -939,6 +939,7 @@ func (rs *RiskSizer) handleOptionsSignal(
 		fallbackBPS = *spec.Options.LimitBufferBPS
 	}
 	var fillPrice float64
+	var paperPinLiveAsk float64
 	spread := best.Ask - best.Bid
 	switch {
 	case event.EnvMode == domain.EnvModePaper && forcedOK && forced.RefPremium > 0:
@@ -948,6 +949,9 @@ func (rs *RiskSizer) handleOptionsSignal(
 		// the priceCap so the simbroker's fill matches the cap exactly.
 		priceCap := forced.RefPremium * (1.0 + forced.BufferPct)
 		fillPrice = priceCap
+		if spec.Options.PaperFillAtAsk && best.Ask > 0 {
+			paperPinLiveAsk = best.Ask
+		}
 		rs.logger.Info("risk sizer: pinned entry to author ref premium + buffer",
 			"strategy", strategyName,
 			"contract", string(best.ContractSymbol),
@@ -1139,6 +1143,13 @@ func (rs *RiskSizer) handleOptionsSignal(
 	// Propagate all signal tags into Meta for downstream consumers (backtest JSON, etc.).
 	for k, v := range sigRef.Tags {
 		intent.Meta["sig_"+k] = v
+	}
+
+	// Paper-pinned BTO live-ask hint for simbroker. Only stamped when the
+	// strategy's [options].paper_fill_at_ask is true AND the chain returned
+	// a usable Ask. Absent => simbroker keeps existing cap-fill behavior.
+	if paperPinLiveAsk > 0 {
+		intent.Meta["live_ask"] = strconv.FormatFloat(paperPinLiveAsk, 'f', -1, 64)
 	}
 
 	if len(exitRules) > 0 {
@@ -1464,6 +1475,14 @@ func (rs *RiskSizer) emit(ctx context.Context, eventType string, tenantID string
 	ev, err := domain.NewEvent(eventType, tenantID, envMode, idempotencyKey, payload)
 	if err != nil {
 		return
+	}
+	// Overwrite OccurredAt with rs.nowFn() so backtest events carry sim-time
+	// (rs.nowFn returns currentBarTime). Downstream async subscribers (e.g.
+	// execution.Service.handleIntent) read event.OccurredAt for DecidedAt;
+	// without this override the event carries domain.NewEvent's time.Now()
+	// default, which is wall clock and breaks causal consistency in backtest.
+	if rs.nowFn != nil {
+		ev.OccurredAt = rs.nowFn()
 	}
 	_ = rs.eventBus.Publish(ctx, *ev)
 }

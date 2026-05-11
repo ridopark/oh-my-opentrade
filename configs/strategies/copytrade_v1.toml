@@ -41,7 +41,7 @@ trail_giveback_pct = 0.15
 default_stc_fraction = 0.33
 risk_per_trade_bps = 1000
 max_position_bps = 3000
-max_positions = 12
+max_positions = 0
 
 # Evict Pending entries the broker never filled/rejected so they stop eating
 # max_positions slots. Backtests inherit paper (they run as EnvModePaper). 0 disables.
@@ -52,6 +52,11 @@ pending_ttl_live_seconds = 90
 # of synthetic BSM pricing. Set false for BSM-only A/B runs. Live trading
 # is unaffected regardless — broker always owns fill pricing there.
 pin_to_author_ref = true
+
+# BTO veto cutoff: skip if Discord message is older than this at fill time.
+# Cuts the pre-RTH / overnight-gap slip > +20% tail observed by quant-analyst.
+# 0 disables.
+max_signal_age_secs = 1800
 
 # Partial-exit keyword table. Longest keyword wins (sorted by the strategy).
 # Fraction applies to REMAINING contracts at position-monitor level.
@@ -117,6 +122,12 @@ max_contracts = 50
 limit_spread_pct = 1.00
 limit_buffer_bps = 500
 stale_cancel_secs = 60
+# In the paper-pinned BTO path the simbroker would otherwise fill at the
+# 10%-buffer cap unconditionally, which inflated backtest slippage by
+# ~11.3% vs live IBKR (which fills at the actual ask). With this on the
+# risk sizer stamps the chain's live Ask into intent.Meta["live_ask"] and
+# the simbroker uses min(live_ask, cap) as the fill mid.
+paper_fill_at_ask = true
 
 [options.defaults]
 min_open_interest = 25
