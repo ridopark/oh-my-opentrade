@@ -53,6 +53,11 @@ pending_ttl_live_seconds = 90
 # is unaffected regardless — broker always owns fill pricing there.
 pin_to_author_ref = true
 
+# BTO veto cutoff: skip if Discord message is older than this at fill time.
+# Cuts the pre-RTH / overnight-gap slip > +20% tail observed by quant-analyst.
+# 0 disables.
+max_signal_age_secs = 1800
+
 # Partial-exit keyword table. Longest keyword wins (sorted by the strategy).
 # Fraction applies to REMAINING contracts at position-monitor level.
 # NOTE: keep this block last under [params] — TOML sub-tables attach to

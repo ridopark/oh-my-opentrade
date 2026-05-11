@@ -882,3 +882,61 @@ func TestCopytrade_STC_WithoutBTO_NotQueued(t *testing.T) {
 	cst := st.(*copytradeState)
 	assert.Empty(t, cst.Positions, "STC with no prior BTO must not create a position")
 }
+
+// TestCopytrade_BTO_AgeWithinCutoff_EmitsSignal locks the happy path of the
+// max_signal_age_secs veto: a 5-minute-old BTO at the 1800s default must pass.
+func TestCopytrade_BTO_AgeWithinCutoff_EmitsSignal(t *testing.T) {
+	params := copytradeDefaultParams()
+	params["max_signal_age_secs"] = 1800
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+
+	sig := copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20)
+	sig.PostedAt = ctx.now.Add(-5 * time.Minute)
+
+	next, signals, err := s.OnEvent(ctx, "__copytrade__", sig, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1, "5-minute-old BTO must pass the 1800s cutoff")
+
+	cst := next.(*copytradeState)
+	require.Len(t, cst.Positions, 1, "fresh BTO must register a position")
+}
+
+// TestCopytrade_BTO_AgeExceedsCutoff_Vetoed locks the veto: 31 min > 1800s,
+// signal must be dropped with no state mutation.
+func TestCopytrade_BTO_AgeExceedsCutoff_Vetoed(t *testing.T) {
+	params := copytradeDefaultParams()
+	params["max_signal_age_secs"] = 1800
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+
+	sig := copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20)
+	sig.PostedAt = ctx.now.Add(-31 * time.Minute)
+
+	next, signals, err := s.OnEvent(ctx, "__copytrade__", sig, st)
+	require.NoError(t, err)
+	assert.Empty(t, signals, "stale BTO must not emit entry signal")
+
+	cst := next.(*copytradeState)
+	assert.Empty(t, cst.Positions, "vetoed BTO must not register a position")
+	assert.Empty(t, cst.Generations, "vetoed BTO must not bump Generations")
+}
+
+// TestCopytrade_BTO_VetoDisabledWhenZero verifies the 0 sentinel keeps the
+// legacy "no age check" behavior, even for 100-day-old signals.
+func TestCopytrade_BTO_VetoDisabledWhenZero(t *testing.T) {
+	params := copytradeDefaultParams()
+	params["max_signal_age_secs"] = 0
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+
+	sig := copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20)
+	sig.PostedAt = ctx.now.Add(-100 * 24 * time.Hour)
+
+	next, signals, err := s.OnEvent(ctx, "__copytrade__", sig, st)
+	require.NoError(t, err)
+	require.Len(t, signals, 1, "max_signal_age_secs=0 must disable the veto regardless of age")
+
+	cst := next.(*copytradeState)
+	require.Len(t, cst.Positions, 1, "veto disabled — position must be registered")
+}
