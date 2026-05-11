@@ -784,6 +784,15 @@ func (s *Service) processFill(fill fillMsg) {
 					// so the later processExitSubmitted call skips its
 					// in-flight setup.
 					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
+					// triggerExit set ExitPending=true before submitting the
+					// order; the broker order is now terminal but ExitOrderID
+					// was never wired. Clear the in-flight state so
+					// handleExitTimeout doesn't loop on ExitPending=true with
+					// an empty ExitOrderID.
+					pos.ExitPending = false
+					if s.positionGate != nil {
+						s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+					}
 				}
 			}
 			s.log.Info().

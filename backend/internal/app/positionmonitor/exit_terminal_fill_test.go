@@ -190,6 +190,63 @@ func TestRaceFillBeforeSubmitted_DedupViaRecentlyFilled(t *testing.T) {
 	assert.False(t, stillMarked, "processExitSubmitted must clear the recentlyFilled entry")
 }
 
+// TestRaceFillBeforeSubmitted_ClearsExitPending exercises iter-3 of the
+// race fix. triggerExit sets pos.ExitPending=true at exit_eval.go:848
+// before submitting the broker order. In backtest, SimBroker's
+// FillReceived can land before the OrderSubmitted handler wires
+// ExitOrderID/PendingExitOrderIDs, so processFill hits the "unmatched"
+// branch with ExitPending=true && ExitOrderID="". Pre-iter-3 left that
+// state intact — handleExitTimeout then looped on ExitPending=true with
+// empty ExitOrderID and emitted "exit cancel never reached terminal"
+// every bar. Iter-3 clears ExitPending and the position gate on the
+// unmatched branch so the position is free for the next exit attempt.
+func TestRaceFillBeforeSubmitted_ClearsExitPending(t *testing.T) {
+	contract := domain.Symbol("AMZN260202C00245000")
+	svc := newCopytradeExitService()
+	pos := seedOptionPosition(t, svc, contract, 5)
+	// Post-triggerExit state: ExitPending=true but OrderSubmitted hasn't
+	// run yet so ExitOrderID is empty and PendingExitOrderIDs is nil.
+	pos.ExitPending = true
+	pos.ExitPendingAt = time.Now()
+	pos.ExitOrderID = ""
+	pos.PendingExitOrderIDs = nil
+
+	// Mark the gate as inflight so we can observe ClearInflightExit.
+	require.True(t, svc.positionGate.TryMarkInflightExit(svc.tenantID, svc.envMode, contract),
+		"precondition: gate slot must be free before test")
+
+	// FillReceived arrives before OrderSubmitted. Partial-close path
+	// (qty=2 < startQty=5).
+	svc.processFill(fillMsg{
+		Symbol:        contract,
+		Side:          "SELL",
+		Direction:     string(domain.DirectionCloseLong),
+		Price:         1.30,
+		Quantity:      2,
+		FilledAt:      time.Now(),
+		Strategy:      "copytrade_v1",
+		BrokerOrderID: "ord-X",
+	})
+
+	assert.False(t, pos.ExitPending, "iter-3 must clear ExitPending on unmatched-fill race")
+	assert.Equal(t, "", pos.ExitOrderID, "ExitOrderID must remain empty")
+	_, marked := svc.recentlyFilledOrders["ord-X"]
+	assert.True(t, marked, "unmatched broker_order_id must be stashed for processExitSubmitted dedup")
+
+	gateFree := svc.positionGate.TryMarkInflightExit(svc.tenantID, svc.envMode, contract)
+	assert.True(t, gateFree, "position gate must be cleared so next exit attempt can fire")
+
+	// processExitSubmitted arrives later for the same id and must consume
+	// the dedup entry (existing iter-2 behavior).
+	svc.processExitSubmitted(exitOrderSubmittedMsg{
+		Symbol:        contract,
+		BrokerOrderID: "ord-X",
+		Direction:     string(domain.DirectionCloseLong),
+	})
+	_, stillMarked := svc.recentlyFilledOrders["ord-X"]
+	assert.False(t, stillMarked, "processExitSubmitted must consume the recentlyFilled entry")
+}
+
 // TestNormalOrderSubmitThenFill_NoSetEntry verifies the normal lifecycle
 // path leaves recentlyFilledOrders untouched: when OrderSubmitted runs
 // FIRST (the natural live-broker ordering), the fill finds its id
