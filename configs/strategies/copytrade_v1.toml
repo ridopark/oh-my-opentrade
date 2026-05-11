@@ -41,7 +41,7 @@ trail_giveback_pct = 0.15
 default_stc_fraction = 0.33
 risk_per_trade_bps = 1000
 max_position_bps = 3000
-max_positions = 12
+max_positions = 50
 
 # Evict Pending entries the broker never filled/rejected so they stop eating
 # max_positions slots. Backtests inherit paper (they run as EnvModePaper). 0 disables.
