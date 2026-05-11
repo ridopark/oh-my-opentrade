@@ -1162,6 +1162,16 @@ func (s *Service) emit(ctx context.Context, eventType string, tenantID string, e
 	if err != nil {
 		return
 	}
+	// Overwrite OccurredAt with s.nowFunc() so backtest events carry
+	// sim-time. Async subscribers (execution.Service.handleIntent) stamp
+	// intent.DecidedAt from event.OccurredAt; without this override the
+	// event carries domain.NewEvent's time.Now() default (wall clock) and
+	// downstream SELL fills get stamped at end-of-run wall clock instead
+	// of the sim-time of the STC. Live unaffected (nowFunc defaults to
+	// time.Now in live mode).
+	if s.nowFunc != nil {
+		ev.OccurredAt = s.nowFunc()
+	}
 	_ = s.eventBus.Publish(ctx, *ev)
 }
 
