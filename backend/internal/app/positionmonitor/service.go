@@ -124,6 +124,14 @@ type fillMsg struct {
 	ExitRules    []domain.ExitRule // set by bootstrap; nil from live fill events
 	RiskModifier domain.RiskModifier
 
+	// BrokerOrderID identifies the broker order that produced this fill.
+	// Used by processFill's partial-close branch to drop the entry from
+	// PendingExitOrderIDs and clear ExitPending atomically when no peer
+	// exit orders are still working. Empty on bootstrap-synthesized
+	// fills (which never carry a broker order id); the cleanup branch
+	// short-circuits on empty so legacy callers stay byte-identical.
+	BrokerOrderID string
+
 	// Signal tags propagated from the entry signal through OrderIntent.Meta.
 	// Used to carry per-trade exit modifiers (e.g. Z-conditioned multipliers).
 	SignalTags map[string]string
@@ -716,9 +724,29 @@ func (s *Service) processFill(fill fillMsg) {
 				delete(pos.CustomState, "tiered_tp_exit_qty_frac")
 				delete(pos.CustomState, "time_partial_exit_qty_frac")
 			}
-			// Keep ExitPending=true: the broker order is still active for the
-			// remaining quantity. Clearing it would let the tick loop fire
-			// another full-qty exit, causing double-sells.
+			// Terminal-fill cleanup for a deliberately-partial exit intent
+			// (copytrade STC frac<1.0, tiered TP, time-partial). The broker
+			// order that produced this fill is done — drop it from the
+			// peer-tracking set. If no peer exit orders remain working, also
+			// clear ExitPending and the position-gate slot so a follow-on
+			// STC can fire without hitting `prior exit in flight`. When peers
+			// are still working, leave ExitPending untouched: the SOFI-1605
+			// single-ExitPending invariant says the tick loop's guard is the
+			// only thing blocking a third order from firing in the gap.
+			if fill.BrokerOrderID != "" && pos.PendingExitOrderIDs != nil {
+				if _, tracked := pos.PendingExitOrderIDs[fill.BrokerOrderID]; tracked {
+					delete(pos.PendingExitOrderIDs, fill.BrokerOrderID)
+					if len(pos.PendingExitOrderIDs) == 0 {
+						pos.ExitPending = false
+						if pos.ExitOrderID == fill.BrokerOrderID {
+							pos.ExitOrderID = ""
+						}
+						if s.positionGate != nil {
+							s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+						}
+					}
+				}
+			}
 			s.log.Info().
 				Str("symbol", string(fill.Symbol)).
 				Float64("exit_price", fill.Price).
