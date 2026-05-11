@@ -435,8 +435,17 @@ func NewService(
 
 // Start subscribes to FillReceived events and launches the actor goroutines.
 func (s *Service) Start(ctx context.Context) error {
-	if err := s.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
-		return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+	// Backtest path requires sync delivery so processFill registers the
+	// position before runner.handleFill's drain pre-amble fires. Live path
+	// stays async to keep the bus publisher off the actor's hot path.
+	if s.disableTickLoop {
+		if err := s.eventBus.Subscribe(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
+			return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+		}
+	} else {
+		if err := s.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
+			return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+		}
 	}
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderSubmitted, s.handleOrderSubmitted); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to OrderSubmitted: %w", err)

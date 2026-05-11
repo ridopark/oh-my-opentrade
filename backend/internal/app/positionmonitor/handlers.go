@@ -10,9 +10,11 @@ import (
 )
 
 // handleFillEvent is the EventBusPort handler.
-// It enqueues fills to the actor channel for async processing.
-// NEVER blocks the caller — fills are queued via a buffered channel.
+// Live path: enqueues fills to s.fills for async processing by runTickLoop.
 // Fills may be dropped if the actor falls behind (channel buffer exhausted).
+// Backtest path (disableTickLoop=true): runs processFill inline so s.positions
+// is populated before bus.Publish returns, preventing downstream sync
+// subscribers (strategy runner) from seeing FillReceived ahead of registration.
 func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(map[string]any)
 	if !ok {
@@ -52,8 +54,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 		_, _ = fmt.Sscanf(deltaAtEntryStr, "%f", &deltaAtEntry)
 	}
 
-	select {
-	case s.fills <- fillMsg{
+	msg := fillMsg{
 		Symbol:         domain.Symbol(symbol),
 		Side:           side,
 		Direction:      direction,
@@ -69,7 +70,19 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 		IVAtEntry:      ivAtEntry,
 		DeltaAtEntry:   deltaAtEntry,
 		SignalTags:     signalTags,
-	}:
+	}
+
+	// Backtest mode: process inline so s.positions is populated before bus
+	// delivers FillReceived to other sync subscribers (strategy runner).
+	// processFill takes s.mu itself — do NOT re-lock here, that would
+	// self-deadlock (sync.RWMutex is non-reentrant).
+	if s.disableTickLoop {
+		s.processFill(msg)
+		return nil
+	}
+
+	select {
+	case s.fills <- msg:
 	default:
 		s.log.Warn().Str("symbol", symbol).Msg("position monitor: fill channel full, dropping fill")
 	}
