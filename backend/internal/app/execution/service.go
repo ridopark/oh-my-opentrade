@@ -1167,6 +1167,7 @@ func (s *Service) handleIntent(ctx context.Context, event domain.Event) error {
 		return nil
 	}
 	submitStart := s.nowFn()
+	intent.DecidedAt = submitStart
 	if parity.Enabled() {
 		l.Info().
 			Str("stage", parity.StageOrderSubmitted).

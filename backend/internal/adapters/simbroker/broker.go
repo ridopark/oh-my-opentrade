@@ -468,6 +468,16 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	}
 
 	barTime := b.barTimes[priceSymbol]
+	// FilledAt source: prefer intent.DecidedAt (set by execution.Service from
+	// s.nowFn()). Fall back to the cached underlying bar time for legacy
+	// callers (paired-leg submitter, dust-sweep, broker-internal recursion,
+	// tests). Fallback is transitional; tracked for removal once all upstream
+	// SubmitOrder callers stamp DecidedAt unconditionally.
+	decidedAt := intent.DecidedAt
+	if decidedAt.IsZero() {
+		decidedAt = barTime
+		b.log.Debug().Str("symbol", string(intent.Symbol)).Msg("simbroker: DecidedAt fallback to barTime")
+	}
 
 	var fillPrice float64
 	var side string
@@ -663,7 +673,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		orderID:   orderID,
 		fillPrice: fillPrice,
 		fillQty:   intent.Quantity,
-		filledAt:  barTime,
+		filledAt:  decidedAt,
 		side:      side,
 	}
 
@@ -745,7 +755,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			Price:          fillPrice,
 			FilledQty:      intent.Quantity,
 			FilledAvgPrice: fillPrice,
-			FilledAt:       barTime,
+			FilledAt:       decidedAt,
 			Commission:     fees.Commission,
 			RegulatoryFee:  fees.Regulatory,
 			ExchangeFee:    fees.Exchange,

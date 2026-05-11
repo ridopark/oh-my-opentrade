@@ -730,3 +730,40 @@ func TestService_PositionGate_InflightClearedAfterFill(t *testing.T) {
 	bus.Flush()
 	assert.Equal(t, 2, broker.SubmitOrderCalls, "second entry should be allowed after fill clears inflight")
 }
+
+// TestHandleIntent_StampsDecidedAtFromNowFn pins the contract:
+// execution.Service must stamp intent.DecidedAt with s.nowFn() before
+// invoking broker.SubmitOrder. SimBroker uses this for FilledAt; the wrong
+// stamp produces fills causally earlier than the signal that triggered them.
+func TestHandleIntent_StampsDecidedAtFromNowFn(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	riskEngine := execution.NewRiskEngine(0.02)
+	slippageGuard := execution.NewSlippageGuard(quoteProvider)
+	fixed := time.Date(2026, 2, 26, 20, 48, 31, 0, time.UTC)
+	nowFn := func() time.Time { return fixed }
+	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFn)
+
+	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, zerolog.Nop(),
+		execution.WithNowFunc(nowFn),
+	)
+
+	var captured domain.OrderIntent
+	broker.SubmitOrderFunc = func(_ context.Context, intent domain.OrderIntent) (string, error) {
+		captured = intent
+		return "order-decidedat", nil
+	}
+
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
+
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls)
+	assert.Equal(t, fixed, captured.DecidedAt,
+		"handleIntent must stamp DecidedAt with s.nowFn() before SubmitOrder")
+}
