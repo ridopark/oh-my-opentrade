@@ -236,6 +236,7 @@ func (s *CopytradeStrategy) OnEvent(ctx start.Context, _ string, evt any, st sta
 	}
 
 	cst = expireStalePending(ctx, cst)
+	s.drainReadyQueues(ctx, cst)
 
 	switch e := evt.(type) {
 	case start.FillConfirmation:
@@ -612,34 +613,50 @@ func (s *CopytradeStrategy) handleFillConfirmation(ctx start.Context, cst *copyt
 		return cst, nil, nil
 	}
 	match.Pending = false
-	queued := match.QueuedSTCs
-	match.QueuedSTCs = nil
 	if ctx != nil {
 		ctx.Logger().Info("copytrade: BTO fill confirmed",
 			"contract_symbol", fc.Symbol, "generation", match.Generation,
 			"fill_price", fc.Price, "fill_qty", fc.Quantity,
-			"queued_stcs", len(queued))
+			"queued_stcs", len(match.QueuedSTCs))
 	}
-
-	// Drain queued STCs in arrival order. Re-lookup pos by key on each
-	// iteration because a full close deletes it (and any subsequent STC
-	// against an already-closed position is dropped per plan).
-	for _, qsig := range queued {
-		pos, ok := cst.Positions[matchKey]
-		if !ok {
-			if ctx != nil {
-				ctx.Logger().Info("copytrade: short-circuiting queued STC — position already closed",
-					"contract_symbol", fc.Symbol)
-			}
-			break
-		}
-		if s.dispatchSTC(ctx, cst, pos, qsig, matchKey) {
-			// Full close — remaining queued STCs would target a deleted position.
-			break
-		}
-	}
-
+	// Do NOT drain QueuedSTCs here. handleFillConfirmation runs inside the
+	// bus's delivery of FillReceived, BEFORE position_monitor's own
+	// FillReceived subscriber has registered the position. An inline emit
+	// races and produces "no matching position". drainReadyQueues runs on
+	// the next OnEvent, by which time position_monitor has caught up.
+	_ = matchKey
 	return cst, nil, nil
+}
+
+// drainReadyQueues dispatches QueuedSTCs for any Pending=false position with
+// a non-empty queue. Runs in the OnEvent pre-amble so the drain always
+// happens on a SUBSEQUENT bus cycle relative to the FillReceived that
+// flipped Pending=false. Position monitor will have registered the position
+// by then; CopytradeExitRequest finds the target instead of orphaning.
+func (s *CopytradeStrategy) drainReadyQueues(ctx start.Context, cst *copytradeState) {
+	if cst == nil {
+		return
+	}
+	for key, pos := range cst.Positions {
+		if pos == nil || pos.Pending || len(pos.QueuedSTCs) == 0 {
+			continue
+		}
+		queued := pos.QueuedSTCs
+		pos.QueuedSTCs = nil
+		for _, qsig := range queued {
+			cur, ok := cst.Positions[key]
+			if !ok {
+				if ctx != nil {
+					ctx.Logger().Info("copytrade: short-circuiting queued STC — position already closed",
+						"contract_symbol", pos.ContractSymbol)
+				}
+				break
+			}
+			if s.dispatchSTC(ctx, cst, cur, qsig, key) {
+				break
+			}
+		}
+	}
 }
 
 // handleExitRejection rolls RemainingFrac back when position monitor refuses a
@@ -791,6 +808,14 @@ func expireStalePending(ctx start.Context, cst *copytradeState) *copytradeState 
 // pickPendingTTL returns 0 when the sweep is disabled for the current env.
 // Backtests inherit the paper TTL because they run as EnvModePaper.
 func pickPendingTTL(ctx start.Context, cfg copytradeConfig) time.Duration {
+	// Disable Pending TTL in backtest. ctx.Now() is sim time, which can jump
+	// between events; an old un-filled BTO will look 100x past its TTL the
+	// next time OnEvent fires, and worse, the FillConfirmation's own OnEvent
+	// invocation evicts the Pending position it would have matched. Backtest
+	// is deterministic — EntryRejection cleans up rejected BTOs.
+	if ctx.IsBacktest() {
+		return 0
+	}
 	switch ctx.EnvMode() {
 	case start.EnvModeLive:
 		return time.Duration(cfg.PendingTTLLiveSecs) * time.Second

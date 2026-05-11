@@ -706,9 +706,14 @@ func TestCopytrade_STC_QueuedWhilePending_DispatchesOnFillConfirmation(t *testin
 	}
 	assert.Equal(t, 1, queued, "STC must be queued on the Pending position")
 
-	// FillConfirmation should drain the queue.
+	// FillConfirmation flips Pending=false; drain runs on the NEXT OnEvent
+	// pre-amble so the bus has time to deliver the original FillReceived to
+	// position_monitor before the strategy emits CopytradeExitRequest.
 	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
 	st, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+	// Trigger the drain via a follow-up OnEvent (any event runs the pre-amble).
+	st, _, err = s.OnEvent(ctx, "__copytrade__", start.FillConfirmation{Side: start.SideSell}, st)
 	require.NoError(t, err)
 
 	exits := ctx.exitRequests()
@@ -746,7 +751,10 @@ func TestCopytrade_STC_MultipleQueued_DispatchInOrder(t *testing.T) {
 	}
 
 	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
-	_, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	st, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+	// Follow-up event triggers the deferred drain.
+	_, _, err = s.OnEvent(ctx, "__copytrade__", start.FillConfirmation{Side: start.SideSell}, st)
 	require.NoError(t, err)
 
 	exits := ctx.exitRequests()
@@ -783,6 +791,9 @@ func TestCopytrade_STC_QueuedFullCloseShortCircuits(t *testing.T) {
 
 	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
 	st, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+	// Follow-up event triggers the deferred drain.
+	st, _, err = s.OnEvent(ctx, "__copytrade__", start.FillConfirmation{Side: start.SideSell}, st)
 	require.NoError(t, err)
 
 	exits := ctx.exitRequests()
