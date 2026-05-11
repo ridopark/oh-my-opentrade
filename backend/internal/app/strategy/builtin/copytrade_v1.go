@@ -74,6 +74,7 @@ type copytradeConfig struct {
 	PendingTTLPaperSecs   int
 	PendingTTLLiveSecs    int
 	PinAuthorRef          bool
+	MaxSignalAgeSecs      int // BTO veto cutoff: skip if message age > this. 0 disables.
 }
 
 func parseCopytradeConfig(params map[string]any) copytradeConfig {
@@ -87,6 +88,7 @@ func parseCopytradeConfig(params map[string]any) copytradeConfig {
 		PendingTTLPaperSecs: getInt(params, "pending_ttl_paper_seconds", 0),
 		PendingTTLLiveSecs:  getInt(params, "pending_ttl_live_seconds", 0),
 		PinAuthorRef:        getBool(params, "pin_to_author_ref", true),
+		MaxSignalAgeSecs:    getInt(params, "max_signal_age_secs", 1800),
 	}
 	cfg.PartialFractions = parsePartialFractions(params["partial_fractions"])
 	// Longest-keyword first so "all out" matches before "out" (if ever added).
@@ -153,10 +155,13 @@ type copytradePosition struct {
 	RemainingFrac  float64   `json:"remainingFrac"`
 	TrailArmed     bool      `json:"trailArmed"`
 	Generation     int       `json:"generation"`
-	// Pending is true between BTO emit and FillConfirmation. STC posts are
-	// refused while true so a pre-fill STC can't decrement RemainingFrac
-	// against a position the broker hasn't opened yet.
-	Pending bool `json:"pending"`
+	// Pending is true between BTO emit and FillConfirmation. STC posts that
+	// arrive while Pending are appended to QueuedSTCs in arrival order and
+	// drained on FillConfirmation; this preserves authored intent for the
+	// same-bar BTO+STC case the simulator hit in backtests where simbroker
+	// fills BTO at the next 1m close.
+	Pending    bool                    `json:"pending"`
+	QueuedSTCs []start.CopytradeSignal `json:"queuedSTCs,omitempty"`
 }
 
 // copytradeState is the per-instance catch-all state. It lives under the
@@ -233,6 +238,7 @@ func (s *CopytradeStrategy) OnEvent(ctx start.Context, _ string, evt any, st sta
 	}
 
 	cst = expireStalePending(ctx, cst)
+	s.drainReadyQueues(ctx, cst)
 
 	switch e := evt.(type) {
 	case start.FillConfirmation:
@@ -281,6 +287,17 @@ func (s *CopytradeStrategy) OnEvent(ctx start.Context, _ string, evt any, st sta
 }
 
 func (s *CopytradeStrategy) handleBTO(ctx start.Context, cst *copytradeState, sig start.CopytradeSignal) (start.State, []start.Signal, error) {
+	if cst.Config.MaxSignalAgeSecs > 0 && !sig.PostedAt.IsZero() && ctx != nil {
+		age := ctx.Now().Sub(sig.PostedAt)
+		if age > time.Duration(cst.Config.MaxSignalAgeSecs)*time.Second {
+			ctx.Logger().Warn("copytrade: BTO veto — signal age exceeds max",
+				"author", sig.Author,
+				"ticker", sig.Ticker,
+				"age_seconds", age.Seconds(),
+				"max_age_seconds", cst.Config.MaxSignalAgeSecs)
+			return cst, nil, nil
+		}
+	}
 	if cst.Config.MaxPositions > 0 && len(cst.Positions) >= cst.Config.MaxPositions {
 		if ctx != nil {
 			ctx.Logger().Warn("copytrade: dropping BTO — max_positions reached",
@@ -375,16 +392,35 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 		return cst, nil, nil
 	}
 	if pos.Pending {
+		pos.QueuedSTCs = append(pos.QueuedSTCs, sig)
 		if ctx != nil {
-			ctx.Logger().Warn("copytrade: STC refused — BTO not yet confirmed by broker",
-				"key", key, "contract_symbol", pos.ContractSymbol, "tail", sig.Tail)
+			ctx.Logger().Info("copytrade: STC queued — awaiting BTO confirmation",
+				"key", key, "contract_symbol", pos.ContractSymbol, "tail", sig.Tail,
+				"queue_depth", len(pos.QueuedSTCs))
 		}
 		return cst, nil, nil
 	}
 
-	fraction, keyword := resolveFraction(sig.Tail, pos.RemainingFrac, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
-	// Clamp by remaining fraction so repeated partials never request more
-	// than what's actually open (e.g. two "half out" posts).
+	s.dispatchSTC(ctx, cst, pos, sig, key)
+	return cst, nil, nil
+}
+
+// dispatchSTC applies a single STC to an already-confirmed (Pending=false)
+// position: resolves the fraction, mutates RemainingFrac, emits the exit and
+// (first-partial) chandelier arm, and deletes the position on full close.
+// Returns true when the dispatch fully closed the position so the queue-drain
+// caller can short-circuit any remaining queued STCs.
+func (s *CopytradeStrategy) dispatchSTC(ctx start.Context, cst *copytradeState, pos *copytradePosition, sig start.CopytradeSignal, key string) bool {
+	rawFraction, keyword := resolveFraction(sig.Tail, pos.RemainingFrac, cst.Config.PartialFractions, cst.Config.DefaultSTCFraction)
+	// "Close all" intent (rawFraction >= 1.0) is detected pre-clamp so a
+	// post-partial "all out" still flattens the position. The emit fraction
+	// targets the CURRENT broker pos.Quantity, which the position monitor
+	// already reduced on the prior partial — so 1.0 is correct there even
+	// when our internal RemainingFrac is below 1.0.
+	closeAll := rawFraction >= 1.0
+	// Clamp by remaining fraction so internal RemainingFrac arithmetic stays
+	// non-negative across repeated partials (e.g. two "half out" posts).
+	fraction := rawFraction
 	if fraction > pos.RemainingFrac {
 		fraction = pos.RemainingFrac
 	}
@@ -392,7 +428,7 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 		if ctx != nil {
 			ctx.Logger().Warn("copytrade: STC fraction resolved to 0 — dropping", "key", key)
 		}
-		return cst, nil, nil
+		return false
 	}
 
 	// Fraction is expressed as "close this fraction of REMAINING contracts"
@@ -400,13 +436,17 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 	// The strategy's internal RemainingFrac is the multiplicative residual
 	// so we can model partial-over-partial without knowing absolute qty.
 	newRemaining := pos.RemainingFrac * (1.0 - fraction)
-	fullClose := fraction >= 1.0 || newRemaining < copytradeFullCloseTolerance
+	fullClose := closeAll || newRemaining < copytradeFullCloseTolerance
 
+	emitFraction := fraction
+	if closeAll {
+		emitFraction = 1.0
+	}
 	exitPayload := domain.CopytradeExitRequestPayload{
 		Strategy:       "copytrade_v1",
 		Symbol:         strings.ToUpper(sig.Ticker),
 		ContractSymbol: pos.ContractSymbol,
-		Fraction:       fraction,
+		Fraction:       emitFraction,
 		Reason:         keyword,
 		Author:         sig.Author,
 		RawLine:        sig.RawLine,
@@ -443,16 +483,15 @@ func (s *CopytradeStrategy) handleSTC(ctx start.Context, cst *copytradeState, si
 			ctx.Logger().Info("copytrade: position closed",
 				"key", key, "keyword", keyword, "fraction", fraction)
 		}
-	} else {
-		pos.RemainingFrac = newRemaining
-		if ctx != nil {
-			ctx.Logger().Info("copytrade: partial close",
-				"key", key, "keyword", keyword, "fraction", fraction,
-				"remaining_frac", newRemaining, "trail_armed", pos.TrailArmed)
-		}
+		return true
 	}
-
-	return cst, nil, nil
+	pos.RemainingFrac = newRemaining
+	if ctx != nil {
+		ctx.Logger().Info("copytrade: partial close",
+			"key", key, "keyword", keyword, "fraction", fraction,
+			"remaining_frac", newRemaining, "trail_armed", pos.TrailArmed)
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -549,21 +588,26 @@ func formatFloat(v float64) string {
 }
 
 
-// handleFillConfirmation flips Pending=false on the matching pending position.
-// Matches by (ContractSymbol, Pending=true) on BUY-side fills; SELL-side fills
-// (partial/full closes) do not affect Pending. When no Pending position matches
-// a BUY fill, emits CopytradeOrphanFillPayload so operators get paged — this
-// race happens when TTL sweep deleted the position a beat before the fill.
+// handleFillConfirmation flips Pending=false on the matching pending position
+// and drains any STCs that arrived while Pending. Matches by (ContractSymbol,
+// Pending=true) on BUY-side fills; SELL-side fills (partial/full closes) do
+// not affect Pending. When no Pending position matches a BUY fill, emits
+// CopytradeOrphanFillPayload so operators get paged — this race happens when
+// TTL sweep deleted the position a beat before the fill.
 func (s *CopytradeStrategy) handleFillConfirmation(ctx start.Context, cst *copytradeState, fc start.FillConfirmation) (start.State, []start.Signal, error) {
 	if fc.Side != start.SideBuy {
 		return cst, nil, nil
 	}
-	var match *copytradePosition
-	for _, pos := range cst.Positions {
+	var (
+		matchKey string
+		match    *copytradePosition
+	)
+	for k, pos := range cst.Positions {
 		if pos == nil || !pos.Pending || pos.ContractSymbol != fc.Symbol {
 			continue
 		}
 		if match == nil || pos.OpenedAt.Before(match.OpenedAt) {
+			matchKey = k
 			match = pos
 		}
 	}
@@ -585,9 +629,47 @@ func (s *CopytradeStrategy) handleFillConfirmation(ctx start.Context, cst *copyt
 	if ctx != nil {
 		ctx.Logger().Info("copytrade: BTO fill confirmed",
 			"contract_symbol", fc.Symbol, "generation", match.Generation,
-			"fill_price", fc.Price, "fill_qty", fc.Quantity)
+			"fill_price", fc.Price, "fill_qty", fc.Quantity,
+			"queued_stcs", len(match.QueuedSTCs))
 	}
+	// Do NOT drain QueuedSTCs here. handleFillConfirmation runs inside the
+	// bus's delivery of FillReceived, BEFORE position_monitor's own
+	// FillReceived subscriber has registered the position. An inline emit
+	// races and produces "no matching position". drainReadyQueues runs on
+	// the next OnEvent, by which time position_monitor has caught up.
+	_ = matchKey
 	return cst, nil, nil
+}
+
+// drainReadyQueues dispatches QueuedSTCs for any Pending=false position with
+// a non-empty queue. Runs in the OnEvent pre-amble so the drain always
+// happens on a SUBSEQUENT bus cycle relative to the FillReceived that
+// flipped Pending=false. Position monitor will have registered the position
+// by then; CopytradeExitRequest finds the target instead of orphaning.
+func (s *CopytradeStrategy) drainReadyQueues(ctx start.Context, cst *copytradeState) {
+	if cst == nil {
+		return
+	}
+	for key, pos := range cst.Positions {
+		if pos == nil || pos.Pending || len(pos.QueuedSTCs) == 0 {
+			continue
+		}
+		queued := pos.QueuedSTCs
+		pos.QueuedSTCs = nil
+		for _, qsig := range queued {
+			cur, ok := cst.Positions[key]
+			if !ok {
+				if ctx != nil {
+					ctx.Logger().Info("copytrade: short-circuiting queued STC — position already closed",
+						"contract_symbol", pos.ContractSymbol)
+				}
+				break
+			}
+			if s.dispatchSTC(ctx, cst, cur, qsig, key) {
+				break
+			}
+		}
+	}
 }
 
 // handleExitRejection rolls RemainingFrac back when position monitor refuses a
@@ -656,6 +738,10 @@ func (s *CopytradeStrategy) handleEntryRejection(ctx start.Context, cst *copytra
 	if match == nil {
 		return cst, nil, nil
 	}
+	if n := len(match.QueuedSTCs); n > 0 && ctx != nil {
+		ctx.Logger().Warn("copytrade: discarding queued STCs due to BTO rejection",
+			"contract_symbol", rej.Symbol, "queued_stcs", n)
+	}
 	delete(cst.Positions, matchKey)
 	rollbackGeneration(cst, match.Base, match.Generation)
 	if ctx != nil {
@@ -716,6 +802,10 @@ func expireStalePending(ctx start.Context, cst *copytradeState) *copytradeState 
 			ExpiredAt:      now,
 			AgeSeconds:     ageSec,
 		})
+		if n := len(pos.QueuedSTCs); n > 0 {
+			ctx.Logger().Warn("copytrade: discarding queued STCs due to BTO TTL expiry",
+				"contract_symbol", pos.ContractSymbol, "queued_stcs", n)
+		}
 		ctx.Logger().Warn("copytrade: ghost position expired — no fill within TTL",
 			"contract_symbol", pos.ContractSymbol,
 			"base", pos.Base,
@@ -731,6 +821,14 @@ func expireStalePending(ctx start.Context, cst *copytradeState) *copytradeState 
 // pickPendingTTL returns 0 when the sweep is disabled for the current env.
 // Backtests inherit the paper TTL because they run as EnvModePaper.
 func pickPendingTTL(ctx start.Context, cfg copytradeConfig) time.Duration {
+	// Disable Pending TTL in backtest. ctx.Now() is sim time, which can jump
+	// between events; an old un-filled BTO will look 100x past its TTL the
+	// next time OnEvent fires, and worse, the FillConfirmation's own OnEvent
+	// invocation evicts the Pending position it would have matched. Backtest
+	// is deterministic — EntryRejection cleans up rejected BTOs.
+	if ctx.IsBacktest() {
+		return 0
+	}
 	switch ctx.EnvMode() {
 	case start.EnvModeLive:
 		return time.Duration(cfg.PendingTTLLiveSecs) * time.Second

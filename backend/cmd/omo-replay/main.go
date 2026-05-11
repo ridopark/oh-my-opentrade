@@ -695,6 +695,21 @@ func main() {
 			return nil
 		})
 
+		// Position monitor MUST subscribe to FillReceived BEFORE the per-shard
+		// strategy runners subscribe — otherwise runner.handleFill drains its
+		// queued copytrade STC events before position_monitor.processFill has
+		// registered the open position, producing "copytrade_exit_request: no
+		// matching position" warnings on the CLI path (mirrors the HTTP
+		// backtest race fixed in PR #102). posMon has no shard-state
+		// dependency; PriceCache subscribes to MarketBarSanitized; neither
+		// requires the shard runners to be live.
+		if err := posMonBundle.PriceCache.Start(ctx, eventBus); err != nil {
+			log.Fatal().Err(err).Msg("failed to start price cache")
+		}
+		if err := posMonBundle.Service.Start(ctx); err != nil {
+			log.Fatal().Err(err).Msg("failed to start position monitor")
+		}
+
 		// Start per-shard monitors + runners. Monitor/runner Start()
 		// registers bus subscriptions; direct dispatch bypasses those in
 		// the hot loop, but bus-path handlers (FillReceived,
@@ -721,12 +736,6 @@ func main() {
 		}
 		if err := execBundle.Service.Start(ctx, "backtest", domain.EnvModePaper); err != nil {
 			log.Fatal().Err(err).Msg("failed to start execution service")
-		}
-		if err := posMonBundle.PriceCache.Start(ctx, eventBus); err != nil {
-			log.Fatal().Err(err).Msg("failed to start price cache")
-		}
-		if err := posMonBundle.Service.Start(ctx); err != nil {
-			log.Fatal().Err(err).Msg("failed to start position monitor")
 		}
 		if strategyShared.Enricher != nil {
 			if err := strategyShared.Enricher.Start(ctx); err != nil {

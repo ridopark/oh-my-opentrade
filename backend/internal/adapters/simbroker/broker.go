@@ -24,6 +24,14 @@ import (
 // runner can record it as a "size rejected" event in cost diagnostics.
 var ErrParticipationCap = errors.New("simbroker: option participation cap exceeded")
 
+// ErrLimitNotMarketable is returned by SubmitOrder for an option entry when
+// the broadcasted live ask exceeds the intent LimitPrice. In live trading
+// IBKR/Alpaca would leave the order unfilled; the simbroker mirrors that by
+// rejecting rather than fabricating a fill at cap. Only emitted when the
+// strategy opts in by stamping intent.Meta["live_ask"] from the paper-pinned
+// BTO path (PaperFillAtAsk).
+var ErrLimitNotMarketable = errors.New("simbroker: option entry live ask above intent limit — not marketable")
+
 // patientExitReasons enumerates intent.Meta["exit_reason"] values that
 // should pay 1.0x impact (resting limit / patient cancel logic). Anything
 // else — including missing — is treated as urgent and pays the urgency
@@ -82,6 +90,13 @@ type Config struct {
 	FeeSchedule   FeeSchedule
 	LatencyMsEq   int // per-equity submission→next-bar latency budget; default 50ms
 	LatencyMsOpt  int // per-option submission→next-bar latency budget; default 200ms
+
+	// OnExpiryFill is invoked once per option position that ExpireOptions
+	// auto-closes at OCC expiry. The payload mirrors the schema decoded by
+	// runner.handleFill / backtest.Collector.onFill so the callback can be
+	// wrapped into a domain.EventFillReceived publish by the caller. nil
+	// disables the expiry sweep emission (positions still get cleared).
+	OnExpiryFill func(payload map[string]any)
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -156,6 +171,9 @@ type Broker struct {
 	feeSchedule  FeeSchedule
 	latencyMsEq  int
 	latencyMsOpt int
+
+	onExpiryFill                    func(payload map[string]any)
+	optionsExpiredMissingUnderlying atomic.Int64
 
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
@@ -392,6 +410,7 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		feeSchedule:     fs,
 		latencyMsEq:     latEq,
 		latencyMsOpt:    latOpt,
+		onExpiryFill:    cfg.OnExpiryFill,
 		prices:          make(map[domain.Symbol]float64),
 		barTimes:        make(map[domain.Symbol]time.Time),
 		bars:            make(map[domain.Symbol]Bar),
@@ -457,6 +476,16 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	}
 
 	barTime := b.barTimes[priceSymbol]
+	// FilledAt source: prefer intent.DecidedAt (set by execution.Service from
+	// s.nowFn()). Fall back to the cached underlying bar time for legacy
+	// callers (paired-leg submitter, dust-sweep, broker-internal recursion,
+	// tests). Fallback is transitional; tracked for removal once all upstream
+	// SubmitOrder callers stamp DecidedAt unconditionally.
+	decidedAt := intent.DecidedAt
+	if decidedAt.IsZero() {
+		decidedAt = barTime
+		b.log.Debug().Str("symbol", string(intent.Symbol)).Msg("simbroker: DecidedAt fallback to barTime")
+	}
 
 	var fillPrice float64
 	var side string
@@ -492,7 +521,11 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			// fills were overstating backtest edge. See
 			// docs/plans/EQUITY-OPTIONS-GAP-PLAN.md §Sprint 6.2.
 			isShortEntry := intent.Direction == domain.DirectionShort
-			fillPrice = b.computeOptionEntryPrice(intent, isShortEntry)
+			entryPrice, entryErr := b.computeOptionEntryPrice(intent, isShortEntry)
+			if entryErr != nil {
+				return "", entryErr
+			}
+			fillPrice = entryPrice
 			// Tier 1 market impact: long entry pays adverse impact (direction=+1);
 			// short entry receives less (direction=-1). Entries are not "urgent"
 			// in the exit sense — no urgency multiplier.
@@ -652,7 +685,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		orderID:   orderID,
 		fillPrice: fillPrice,
 		fillQty:   intent.Quantity,
-		filledAt:  barTime,
+		filledAt:  decidedAt,
 		side:      side,
 	}
 
@@ -734,7 +767,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			Price:          fillPrice,
 			FilledQty:      intent.Quantity,
 			FilledAvgPrice: fillPrice,
-			FilledAt:       barTime,
+			FilledAt:       decidedAt,
 			Commission:     fees.Commission,
 			RegulatoryFee:  fees.Regulatory,
 			ExchangeFee:    fees.Exchange,
@@ -986,6 +1019,135 @@ func (b *Broker) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderU
 		}
 	}()
 	return out, nil
+}
+
+// SetOnExpiryFill registers a callback invoked once per option position that
+// ExpireOptions auto-closes at OCC expiry. Wired by the backtest runner so
+// the broker can stay decoupled from the EventBus while still emitting
+// FillReceived semantics for the sweep.
+func (b *Broker) SetOnExpiryFill(fn func(payload map[string]any)) {
+	b.mu.Lock()
+	b.onExpiryFill = fn
+	b.mu.Unlock()
+}
+
+// OptionsExpiredMissingUnderlying returns the cumulative count of expiry
+// sweeps that fell back to intrinsic=0 because no underlying price was
+// cached. Surfaces in the backtest data-quality summary.
+func (b *Broker) OptionsExpiredMissingUnderlying() int64 {
+	return b.optionsExpiredMissingUnderlying.Load()
+}
+
+// ExpireOptions closes any option positions whose expiry session-close has
+// passed barTime (inclusive). Emits a SELL fill at intrinsic value via the
+// OnExpiryFill callback (NOT fillCh — execution.handleStreamFill would
+// drop fills without a matching pendingOrder). Mimics OCC auto-exercise.
+// Idempotent: positions with qty<=0 are skipped, so calling multiple
+// times for the same bar is safe.
+//
+// Lock pattern: scan + mutate under b.mu, then release before invoking the
+// callback. SubmitOrder emits under-lock via a non-blocking fillCh send;
+// we cannot do the same here because the callback synchronously publishes
+// EventFillReceived, whose subscribers (collector, compound-equity
+// handler) may re-enter the broker via GetAccountEquity / GetPositions.
+// Re-entry under b.mu would deadlock the RLock.
+func (b *Broker) ExpireOptions(ctx context.Context, barTime time.Time) {
+	_ = ctx // reserved for future cancellation; today the sweep is in-process and synchronous
+
+	type expiredFill struct {
+		symbol       domain.Symbol
+		strategy     string
+		quantity     float64
+		intrinsic    float64
+		rightChar    string
+		expiryDate   string
+		missingPrice bool
+	}
+
+	var expired []expiredFill
+	cal := domain.CalendarFor(domain.AssetClassEquity)
+
+	b.mu.Lock()
+	for _, pos := range b.positions {
+		if pos == nil || pos.quantity <= 0 {
+			continue
+		}
+		underlying, expiry, right, strike, ok := domain.ParseOCC(pos.symbol)
+		if !ok {
+			continue
+		}
+		sessionClose := cal.SessionClose(expiry)
+		if barTime.Before(sessionClose) {
+			continue
+		}
+
+		px, hasPx := b.prices[domain.Symbol(underlying)]
+		var intrinsic float64
+		if hasPx {
+			switch right {
+			case "CALL":
+				intrinsic = px - strike
+			case "PUT":
+				intrinsic = strike - px
+			}
+			if intrinsic < 0 {
+				intrinsic = 0
+			}
+		}
+
+		rightChar := "C"
+		if right == "PUT" {
+			rightChar = "P"
+		}
+
+		expired = append(expired, expiredFill{
+			symbol:       pos.symbol,
+			strategy:     pos.strategy,
+			quantity:     pos.quantity,
+			intrinsic:    intrinsic,
+			rightChar:    rightChar,
+			expiryDate:   expiry.Format("2006-01-02"),
+			missingPrice: !hasPx,
+		})
+
+		pos.quantity = 0
+		pos.strategy = ""
+	}
+	cb := b.onExpiryFill
+	b.mu.Unlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	for _, e := range expired {
+		if e.missingPrice {
+			b.optionsExpiredMissingUnderlying.Add(1)
+			b.log.Warn().
+				Str("symbol", string(e.symbol)).
+				Float64("quantity", e.quantity).
+				Msg("option expired with no underlying price cached; intrinsic=0 emitted")
+		}
+		if cb == nil {
+			continue
+		}
+		payload := map[string]any{
+			"symbol":          string(e.symbol),
+			"strategy":        e.strategy,
+			"side":            "SELL",
+			"direction":       string(domain.DirectionCloseLong),
+			"quantity":        e.quantity,
+			"price":           e.intrinsic,
+			"filled_at":       barTime,
+			"asset_class":     "OPTION",
+			"instrument_type": "OPTION",
+			"option_right":    e.rightChar,
+			"option_expiry":   e.expiryDate,
+			"exit_reason":     "OPTION_EXPIRY",
+			"broker_order_id": fmt.Sprintf("expiry:%s:%d", e.symbol, barTime.UnixNano()),
+		}
+		cb(payload)
+	}
 }
 
 // AccrueFunding applies a funding payment to all open perp positions for symbol.
@@ -1289,10 +1451,29 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 //
 // Gated by Broker.optionEntrySpreadEnabled so legacy backtests (flag
 // off) keep the previous mid-fill behavior and remain byte-identical.
-func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) float64 {
+func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) (float64, error) {
 	mid := intent.LimitPrice
 	if !b.optionEntrySpreadEnabled {
-		return mid
+		return mid, nil
+	}
+
+	// Paper-pinned BTO: a strategy-supplied live_ask anchors the taker fill
+	// on the realistic ask rather than the intent's cap. Short entries skip
+	// this branch — they hit the bid via the live port below. live_ask > cap
+	// rejects so the simbroker mirrors IBKR's "won't fill above limit".
+	if !isShortEntry && intent.Meta != nil {
+		if v := intent.Meta["live_ask"]; v != "" {
+			var liveAsk float64
+			if _, err := fmt.Sscanf(v, "%f", &liveAsk); err == nil && liveAsk > 0 {
+				if liveAsk > intent.LimitPrice {
+					return 0, fmt.Errorf("%w: live_ask=%.4f limit=%.4f symbol=%s",
+						ErrLimitNotMarketable, liveAsk, intent.LimitPrice, intent.Symbol)
+				}
+				mid = liveAsk
+				spreadPct := optionSpreadPct(mid) * b.optionExitSpreadMult
+				return mid + mid*spreadPct, nil
+			}
+		}
 	}
 
 	// Live per-contract quote takes priority when available.
@@ -1315,10 +1496,10 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 				q, qErr := b.optionLiveData.Quote(context.Background(), underlying, expiry, strike, right)
 				if qErr == nil {
 					if isShortEntry && q.Bid > 0 {
-						return q.Bid
+						return q.Bid, nil
 					}
 					if !isShortEntry && q.Ask > 0 {
-						return q.Ask
+						return q.Ask, nil
 					}
 				}
 			}
@@ -1339,9 +1520,9 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 		if fill < 0.01 {
 			fill = 0.01
 		}
-		return fill
+		return fill, nil
 	}
-	return mid + half
+	return mid + half, nil
 }
 
 // optionSpreadPct returns the tiered half-spread percentage applied to an

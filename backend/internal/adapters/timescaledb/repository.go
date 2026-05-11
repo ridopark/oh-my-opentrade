@@ -769,21 +769,16 @@ func (r *Repository) UpdateOrderFill(ctx context.Context, brokerOrderID string, 
 // untouched by the LIKE filter.
 const queryDeleteAggTradesByBrokerOrderID = `DELETE FROM trades WHERE broker_order_id = $1 AND execution_id LIKE 'agg:%'`
 
-// queryInsertTradeIfNoPerExec is the conditional insert used by the
-// aggregate fill path: write only when no real-exec row exists for the
-// same broker_order_id. The NOT EXISTS subquery filters out our own
-// `agg:` rows so a duplicate aggregate firing collides on the unique
-// idx_trades_execution_id (synthesized exec ID is stable per broker_order_id).
-const queryInsertTradeIfNoPerExec = `INSERT INTO trades (time, account_id, env_mode, trade_id, symbol, side, quantity, price, commission, status, strategy, rationale, thesis, execution_id, instrument_type, option_symbol, underlying, strike, expiry, option_right, premium, delta_at_entry, iv_at_entry, broker_order_id)
-SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
-WHERE NOT EXISTS (
-	SELECT 1 FROM trades
-	WHERE broker_order_id = $24
-	  AND execution_id IS NOT NULL
-	  AND execution_id <> ''
-	  AND execution_id NOT LIKE 'agg:%'
-)
-ON CONFLICT (trade_id, time) DO NOTHING`
+// querySumPerExecQty returns the total quantity already persisted as
+// real per-exec leg rows for one broker_order_id (excluding agg rows and
+// untyped/NULL exec IDs). Used by the aggregate path to size its row at
+// the residual `cumQty - sum(per-exec)` so a missed leg from the broker
+// stream is healed by the next finalization pass instead of leaving a
+// phantom short. Pre-fix the agg insert was suppressed whenever ANY
+// per-exec row existed (NOT EXISTS guard), which neutered the safety net
+// the moment leg 1 of a multi-leg order landed — see the SNOW260515P00152500
+// -3 incident on 2026-05-08.
+const querySumPerExecQty = `SELECT COALESCE(SUM(quantity), 0) FROM trades WHERE broker_order_id = $1 AND execution_id IS NOT NULL AND execution_id <> '' AND execution_id NOT LIKE 'agg:%'`
 
 // RecordFillPerExec persists ONE broker execution. Per-exec writes are
 // authoritative: any prior `agg:<bo_id>` row is removed first so the ledger
@@ -830,8 +825,10 @@ func (r *Repository) RecordFillPerExec(ctx context.Context, brokerOrderID string
 	return nil
 }
 
-// RecordFillAggregate persists an order-level fallback row only when no
-// per-exec row exists. Caller MUST set trade.ExecutionID = "agg:<bo_id>"
+// RecordFillAggregate persists the residual of an order-level fill that
+// per-exec leg writes did not cover. Computes residual = cumQty - SUM(per-exec
+// qty) under the advisory lock, sets trade.Quantity = residual, and inserts
+// only when residual > epsilon. Caller MUST set trade.ExecutionID = "agg:<bo_id>"
 // so re-fires collide on idx_trades_execution_id.
 func (r *Repository) RecordFillAggregate(ctx context.Context, brokerOrderID string, filledAt time.Time, filledPrice, filledQty float64, trade domain.Trade) error {
 	tx, err := r.db.BeginTx(ctx, nil)
@@ -853,7 +850,21 @@ func (r *Repository) RecordFillAggregate(ctx context.Context, brokerOrderID stri
 		return fmt.Errorf("timescaledb: record fill aggregate: update order: %w", err)
 	}
 
-	if _, err := tx.ExecContext(ctx, queryInsertTradeIfNoPerExec, tradeInsertArgs(trade)...); err != nil {
+	var perExecSum float64
+	if err := tx.QueryRowContext(ctx, querySumPerExecQty, brokerOrderID).Scan(&perExecSum); err != nil {
+		return fmt.Errorf("timescaledb: record fill aggregate: query per-exec sum: %w", err)
+	}
+	residual := filledQty - perExecSum
+	if residual <= 1e-9 {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("timescaledb: record fill aggregate: commit: %w", err)
+		}
+		committed = true
+		return nil
+	}
+	trade.Quantity = residual
+
+	if _, err := tx.ExecContext(ctx, queryInsertTrade, tradeInsertArgs(trade)...); err != nil {
 		if strings.Contains(err.Error(), "idx_trades_execution_id") {
 			r.log.Debug().Str("execution_id", trade.ExecutionID).Msg("duplicate aggregate fill ignored (execution_id conflict)")
 		} else {

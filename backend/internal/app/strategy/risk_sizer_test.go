@@ -3,6 +3,7 @@ package strategy_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -623,10 +624,89 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Clamp(t *testing.T) {
 	// limit = 300 * 1.0005 = 300.15, stop = 300 * 0.9975 = 299.25
 	// riskPerShare = |300.15 - 299.25| = 0.90
 	// maxRiskUSD = (100/10000) * 100000 = 1000
-	// risk-based qty = 1000 / 0.90 = 1111.11 (fractional)
+	// risk-based qty = 1000 / 0.90 = 1111.11
 	// maxNotional = (500/10000) * 100000 = 5000
-	// maxQty = 5000 / 300.15 = 16.658 (fractional)
-	assert.InDelta(t, 5000.0/300.15, intent.Quantity, 0.01, "qty should be clamped by max_position_bps")
+	// maxQty = 5000 / 300.15 = 16.658, floored to 16 for equities.
+	assert.Equal(t, 16.0, intent.Quantity, "qty should be clamped by max_position_bps then floored")
+}
+
+// TestRiskSizer_HandleSignal_EquityFloorsFractionalQty reproduces the IWM dust
+// scenario from 2026-05-06: whale_pullback_v1 sized 20.4486890... shares for an
+// equity intent, broker filled the fraction, exit sold only the integer, and
+// the residual orphan dust kept firing reconcile alerts. Sizing must floor for
+// equity intents so dust never forms in the first place.
+func TestRiskSizer_HandleSignal_EquityFloorsFractionalQty(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":   int64(0),
+		"stop_bps":           int64(100),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("whale_pullback_v1:1.0.0:IWM")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "IWM",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "284.64"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.7,
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+
+	assert.Equal(t, math.Floor(intent.Quantity), intent.Quantity, "equity quantity must be a whole number of shares")
+	assert.Greater(t, intent.Quantity, 0.0, "qty must remain positive after flooring")
+}
+
+// TestRiskSizer_HandleSignal_CryptoKeepsFractionalQty asserts that the equity
+// floor does not bleed into crypto sizing, where fractional units (0.x BTC)
+// are normal and required.
+func TestRiskSizer_HandleSignal_CryptoKeepsFractionalQty(t *testing.T) {
+	bus := memory.NewBus()
+	store := &fakeSpecStore{spec: &stratports.Spec{Params: map[string]any{
+		"limit_offset_bps":   int64(0),
+		"stop_bps":           int64(100),
+		"risk_per_trade_bps": int64(10),
+	}}}
+	rs := strategy.NewRiskSizer(bus, store, 100000, nil)
+	require.NoError(t, rs.Start(context.Background()))
+
+	received := subscribeOrderIntentCreated(t, bus)
+
+	iid, _ := strat.NewInstanceID("crypto_avwap_v2:1.0.0:BTC/USD")
+	enrichment := domain.SignalEnrichment{
+		Signal: domain.SignalRef{
+			StrategyInstanceID: string(iid),
+			Symbol:             "BTC/USD",
+			SignalType:         "entry",
+			Side:               "buy",
+			Strength:           0.7,
+			Tags:               map[string]string{"ref_price": "70000"},
+		},
+		Status:     domain.EnrichmentOK,
+		Confidence: 0.7,
+		Direction:  domain.DirectionLong,
+	}
+	publishSignalEnriched(t, bus, enrichment)
+
+	evs := waitForEvents(t, received, 1)
+	intent := evs[0].Payload.(domain.OrderIntent)
+
+	// risk-based qty = $100 / $700 ≈ 0.1428 BTC; equity floor would zero this out.
+	assert.Greater(t, intent.Quantity, 0.0)
+	assert.NotEqual(t, math.Floor(intent.Quantity), intent.Quantity, "crypto qty must remain fractional")
 }
 
 func TestRiskSizer_HandleSignal_MaxPositionBPS_NoClamp(t *testing.T) {
@@ -873,8 +953,8 @@ func TestRiskSizer_HandleSignal_MaxPositionBPS_Default(t *testing.T) {
 	intent := evs[0].Payload.(domain.OrderIntent)
 	// With default max_position_bps=1000 (10%), fractional position clamped.
 	// limitPrice = 298.72 * 1.0005 = 298.86936, maxNotional = 0.10 * 30965 = 3096.5
-	// maxQty = 3096.5 / 298.86936 = 10.36 (fractional)
-	assert.InDelta(t, 3096.5/298.86936, intent.Quantity, 0.01, "GOOGL qty should be clamped by default max_position_bps=1000")
+	// maxQty = 3096.5 / 298.86936 = 10.36, floored to 10 for equities.
+	assert.Equal(t, 10.0, intent.Quantity, "GOOGL qty should be clamped by default max_position_bps=1000 then floored")
 }
 
 func TestRiskSizer_DynamicRisk_ConfidenceGate(t *testing.T) {

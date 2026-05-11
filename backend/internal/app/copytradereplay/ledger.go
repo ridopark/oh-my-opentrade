@@ -56,6 +56,7 @@ func NewLedger(path string, log zerolog.Logger) (*Ledger, error) {
 		"ref_price",
 		"option_right",
 		"option_expiry",
+		"exit_reason",
 	}); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("ledger: write header: %w", err)
@@ -94,6 +95,7 @@ func (l *Ledger) handle(_ context.Context, ev domain.Event) error {
 		tags["ref_price"],
 		stringOf(payload["option_right"]),
 		stringOf(payload["option_expiry"]),
+		stringOf(payload["exit_reason"]),
 	}
 
 	l.mu.Lock()

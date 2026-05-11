@@ -19,7 +19,7 @@ import (
 
 // dualWriteRepo simulates the production dedup contract:
 //   - per-exec writes delete any agg row for the same broker_order_id then insert
-//   - aggregate writes only insert when no per-exec row exists for that bo_id
+//   - aggregate writes insert the residual (cumQty - SUM(per-exec qty)) when > epsilon
 //   - sync.Mutex stands in for pg_advisory_xact_lock(hashtext(bo_id))
 //   - execution_id UNIQUE catches duplicates (real exec id and synthesized agg id)
 type dualWriteRepo struct {
@@ -41,7 +41,8 @@ func (r *dualWriteRepo) seedPhantom(t domain.Trade) {
 	}
 }
 
-func (r *dualWriteRepo) hasRealExecForBrokerOrder(bo string) bool {
+func (r *dualWriteRepo) sumPerExecForBrokerOrder(bo string) float64 {
+	var total float64
 	for _, row := range r.rows {
 		if row.BrokerOrderID != bo {
 			continue
@@ -49,9 +50,9 @@ func (r *dualWriteRepo) hasRealExecForBrokerOrder(bo string) bool {
 		if row.ExecutionID == "" || strings.HasPrefix(row.ExecutionID, "agg:") {
 			continue
 		}
-		return true
+		total += row.Quantity
 	}
-	return false
+	return total
 }
 
 func (r *dualWriteRepo) deleteAggForBrokerOrder(bo string) {
@@ -88,16 +89,18 @@ func (r *dualWriteRepo) RecordFillPerExec(_ context.Context, brokerOrderID strin
 	return nil
 }
 
-func (r *dualWriteRepo) RecordFillAggregate(_ context.Context, brokerOrderID string, _ time.Time, _, _ float64, t domain.Trade) error {
+func (r *dualWriteRepo) RecordFillAggregate(_ context.Context, brokerOrderID string, _ time.Time, _, filledQty float64, t domain.Trade) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if _, dup := r.execIDs[t.ExecutionID]; dup && t.ExecutionID != "" {
 		return nil
 	}
-	if r.hasRealExecForBrokerOrder(brokerOrderID) {
+	residual := filledQty - r.sumPerExecForBrokerOrder(brokerOrderID)
+	if residual <= 1e-9 {
 		return nil
 	}
+	t.Quantity = residual
 	r.rows = append(r.rows, t)
 	if t.ExecutionID != "" {
 		r.execIDs[t.ExecutionID] = len(r.rows) - 1
@@ -325,6 +328,30 @@ func TestInsertFillLeg_AggregateAndPerExecConcurrent_PerExecWins(t *testing.T) {
 	rows := repo.snapshot()
 	require.Len(t, rows, 1)
 	assert.Equal(t, "exec-concurrent", rows[0].ExecutionID, "per-exec must win regardless of arrival order")
+}
+
+// TestInsertFillLeg_PerExecPartial_AggregateWritesResidual reproduces the
+// SNOW260515P00152500 -3 incident from 2026-05-08: broker reported a 2-contract
+// fill but only one per-exec leg arrived on the stream. The aggregate finalization
+// must write a residual row (qty=1) so the ledger stays whole, instead of leaving
+// a permanent shortfall that turns into a "negative DB net" reconcile alert.
+func TestInsertFillLeg_PerExecPartial_AggregateWritesResidual(t *testing.T) {
+	repo := newDualWriteRepo()
+	svc := newDualWriteService(repo)
+	po := makeDualWritePO("9009", 2)
+	now := time.Date(2026, 5, 8, 13, 47, 31, 0, time.UTC)
+
+	// Leg 1 of a 2-contract fill arrives via per-exec.
+	svc.insertFillLeg(po, "9009", "exec-leg-1", now, 10.43, 1, 1, 10.43, zerolog.Nop())
+	// Leg 2 never arrives. Aggregate finalization fires with cumQty=2.
+	svc.insertFillLeg(po, "9009", "", now.Add(time.Second), 10.43, 2, 2, 10.43, zerolog.Nop())
+
+	rows := repo.snapshot()
+	require.Len(t, rows, 2)
+	assert.Equal(t, "exec-leg-1", rows[0].ExecutionID)
+	assert.Equal(t, 1.0, rows[0].Quantity)
+	assert.Equal(t, "agg:9009", rows[1].ExecutionID)
+	assert.Equal(t, 1.0, rows[1].Quantity, "agg row must carry the missing residual qty")
 }
 
 func TestInsertFillLeg_ReconciliationPhantomRowUntouched(t *testing.T) {

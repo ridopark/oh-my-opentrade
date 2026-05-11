@@ -53,7 +53,15 @@ type Service struct {
 	ghostMissCounts      map[string]int                       // key: position key → consecutive broker-miss count
 	pendingGlobalOrphans map[domain.Symbol]int                // key: symbol → consecutive global-reconcile misses
 	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
-	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
+	// recentlyFilledOrders tracks broker_order_ids whose FillReceived event
+	// landed before the corresponding OrderSubmitted handler set up tracking.
+	// Set by processFill when an exit fill arrives for an untracked order;
+	// consumed (and cleared) by processExitSubmitted to avoid stamping
+	// ExitPending=true on an already-completed order. Backtest-only race
+	// surface: live brokers stream submit BEFORE fill on the same connection
+	// so the natural ordering holds.
+	recentlyFilledOrders map[string]struct{}
+	mu                   sync.RWMutex // protects positions for concurrent reads (e.g. PositionCount)
 
 	barDurCache         map[string]time.Duration // cached barDurationFor results
 	snapshotFn          IndicatorSnapshotFunc
@@ -123,6 +131,14 @@ type fillMsg struct {
 	AssetClass   domain.AssetClass
 	ExitRules    []domain.ExitRule // set by bootstrap; nil from live fill events
 	RiskModifier domain.RiskModifier
+
+	// BrokerOrderID identifies the broker order that produced this fill.
+	// Used by processFill's partial-close branch to drop the entry from
+	// PendingExitOrderIDs and clear ExitPending atomically when no peer
+	// exit orders are still working. Empty on bootstrap-synthesized
+	// fills (which never carry a broker order id); the cleanup branch
+	// short-circuits on empty so legacy callers stay byte-identical.
+	BrokerOrderID string
 
 	// Signal tags propagated from the entry signal through OrderIntent.Meta.
 	// Used to carry per-trade exit modifiers (e.g. Z-conditioned multipliers).
@@ -419,6 +435,7 @@ func NewService(
 		ghostMissCounts:         make(map[string]int),
 		pendingGlobalOrphans:    make(map[domain.Symbol]int),
 		pendingGlobalDrifts:     make(map[domain.Symbol]int),
+		recentlyFilledOrders:    make(map[string]struct{}),
 		tickInterval:            1 * time.Second,
 		optionsPollInterval:     30 * time.Second,
 		reconcileInterval:       defaultReconcileInterval,
@@ -435,8 +452,17 @@ func NewService(
 
 // Start subscribes to FillReceived events and launches the actor goroutines.
 func (s *Service) Start(ctx context.Context) error {
-	if err := s.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
-		return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+	// Backtest path requires sync delivery so processFill registers the
+	// position before runner.handleFill's drain pre-amble fires. Live path
+	// stays async to keep the bus publisher off the actor's hot path.
+	if s.disableTickLoop {
+		if err := s.eventBus.Subscribe(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
+			return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+		}
+	} else {
+		if err := s.eventBus.SubscribeAsync(ctx, domain.EventFillReceived, s.handleFillEvent); err != nil {
+			return fmt.Errorf("position_monitor: failed to subscribe to FillReceived: %w", err)
+		}
 	}
 	if err := s.eventBus.Subscribe(ctx, domain.EventOrderSubmitted, s.handleOrderSubmitted); err != nil {
 		return fmt.Errorf("position_monitor: failed to subscribe to OrderSubmitted: %w", err)
@@ -560,9 +586,33 @@ func (s *Service) pollOptionPrices(ctx context.Context) {
 	}
 }
 
+// markRecentlyFilledUnsafe records a broker_order_id whose exit fill
+// arrived before its OrderSubmitted handler ran. Caller must hold s.mu.
+// Backtest-only race surface (see Service.recentlyFilledOrders doc).
+// Entries are short-lived: each is consumed by the very-next
+// processExitSubmitted call carrying the same id. The 1024 soft-warn
+// guard surfaces a leak (dropped processExitSubmitted) without adding
+// TTL bookkeeping that would mask a real ordering bug.
+func (s *Service) markRecentlyFilledUnsafe(brokerOrderID string) {
+	s.recentlyFilledOrders[brokerOrderID] = struct{}{}
+	if n := len(s.recentlyFilledOrders); n > 1024 {
+		s.log.Warn().
+			Int("size", n).
+			Msg("recentlyFilledOrders map exceeds 1024 entries — possible bus-ordering leak")
+	}
+}
+
 func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, alreadyFilled := s.recentlyFilledOrders[msg.BrokerOrderID]; alreadyFilled {
+		delete(s.recentlyFilledOrders, msg.BrokerOrderID)
+		s.log.Debug().
+			Str("symbol", string(msg.Symbol)).
+			Str("broker_order_id", msg.BrokerOrderID).
+			Msg("exit order submit arrived after fill — skipping in-flight setup")
+		return
+	}
 	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
 	pos, ok := s.positions[key]
 	if !ok {
@@ -696,9 +746,55 @@ func (s *Service) processFill(fill fillMsg) {
 			}
 			delete(s.positions, key)
 		} else {
-			// Keep ExitPending=true: the broker order is still active for the
-			// remaining quantity. Clearing it would let the tick loop fire
-			// another full-qty exit, causing double-sells.
+			// Clear partial-exit frac keys: the just-completed partial intent
+			// has fired its fill, so a subsequent chandelier/stop/new-STC
+			// trigger should size against the remaining position without
+			// reusing the prior partial's fraction. exit_eval.go preserves
+			// these keys across re-pegs of the same intent lifecycle; this
+			// is the lifecycle terminus for partial-fill cases.
+			if pos.CustomState != nil {
+				delete(pos.CustomState, "copytrade_exit_qty_frac")
+				delete(pos.CustomState, "tiered_tp_exit_qty_frac")
+				delete(pos.CustomState, "time_partial_exit_qty_frac")
+			}
+			// Terminal-fill cleanup for a deliberately-partial exit intent
+			// (copytrade STC frac<1.0, tiered TP, time-partial). The broker
+			// order that produced this fill is done — drop it from the
+			// peer-tracking set. If no peer exit orders remain working, also
+			// clear ExitPending and the position-gate slot so a follow-on
+			// STC can fire without hitting `prior exit in flight`. When peers
+			// are still working, leave ExitPending untouched: the SOFI-1605
+			// single-ExitPending invariant says the tick loop's guard is the
+			// only thing blocking a third order from firing in the gap.
+			if fill.BrokerOrderID != "" {
+				if _, tracked := pos.PendingExitOrderIDs[fill.BrokerOrderID]; tracked {
+					delete(pos.PendingExitOrderIDs, fill.BrokerOrderID)
+					if len(pos.PendingExitOrderIDs) == 0 {
+						pos.ExitPending = false
+						if pos.ExitOrderID == fill.BrokerOrderID {
+							pos.ExitOrderID = ""
+						}
+						if s.positionGate != nil {
+							s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+						}
+					}
+				} else {
+					// Bus-ordering race (backtest): FillReceived arrived before
+					// the OrderSubmitted handler set up tracking. Stash the id
+					// so the later processExitSubmitted call skips its
+					// in-flight setup.
+					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
+					// triggerExit set ExitPending=true before submitting the
+					// order; the broker order is now terminal but ExitOrderID
+					// was never wired. Clear the in-flight state so
+					// handleExitTimeout doesn't loop on ExitPending=true with
+					// an empty ExitOrderID.
+					pos.ExitPending = false
+					if s.positionGate != nil {
+						s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
+					}
+				}
+			}
 			s.log.Info().
 				Str("symbol", string(fill.Symbol)).
 				Float64("exit_price", fill.Price).

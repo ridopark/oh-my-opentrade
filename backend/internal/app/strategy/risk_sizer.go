@@ -617,6 +617,21 @@ func (rs *RiskSizer) handleSignal(ctx context.Context, event domain.Event) error
 		}
 	}
 
+	// Floor equity quantities to whole shares so the order intent matches what
+	// IBKR will actually report on the per-exec stream. Fractional intents on
+	// equities led to dust-residual orphans (IWM 0.4486890237347403 on
+	// 2026-05-06): broker fills the fractional share, our stream only captures
+	// the integer leg, exit sells the integer, broker silently sweeps the dust,
+	// DB carries an open long that the global reconciler can never heal.
+	// Crypto keeps fractional sizing — BTC/ETH books expect it.
+	if !domain.Symbol(sigRef.Symbol).IsCryptoSymbol() {
+		qty = math.Floor(qty)
+		if qty <= 0 {
+			rs.logger.Warn("equity quantity floored to zero; skipping", "symbol", sigRef.Symbol, "limit_price", limitPrice)
+			return nil
+		}
+	}
+
 	direction := domain.DirectionLong
 	if sigRef.SignalType == start.SignalExit.String() {
 		// Use exit_direction from enrichment tags if set by reconciler;
@@ -924,33 +939,19 @@ func (rs *RiskSizer) handleOptionsSignal(
 		fallbackBPS = *spec.Options.LimitBufferBPS
 	}
 	var fillPrice float64
+	var paperPinLiveAsk float64
 	spread := best.Ask - best.Bid
 	switch {
 	case event.EnvMode == domain.EnvModePaper && forcedOK && forced.RefPremium > 0:
+		// Paper backtest pinned-fill path: simbroker will fill at the limit
+		// regardless of the live ask, so the prior best.Ask > priceCap
+		// rejection was gating on a price we never pay. We still emit at
+		// the priceCap so the simbroker's fill matches the cap exactly.
 		priceCap := forced.RefPremium * (1.0 + forced.BufferPct)
-		if best.Ask > 0 && best.Ask > priceCap {
-			reason := fmt.Sprintf("price_buffer_exceeded: live ask $%.2f above author ref $%.2f +%.0f%% buffer",
-				best.Ask, forced.RefPremium, forced.BufferPct*100)
-			rs.logger.Warn("risk sizer: live ask above author ref premium + buffer — rejecting",
-				"strategy", strategyName,
-				"contract", string(best.ContractSymbol),
-				"ref_premium", forced.RefPremium,
-				"buffer_pct", forced.BufferPct,
-				"cap", priceCap,
-				"ask", best.Ask,
-			)
-			rejection := domain.OrderIntentEventPayload{
-				ID:        uuid.NewString(),
-				Symbol:    sigRef.Symbol,
-				Direction: string(direction),
-				Strategy:  strategyName,
-				Reason:    reason,
-				Status:    domain.OrderIntentStatusRejected,
-			}
-			rs.emit(ctx, domain.EventOrderIntentRejected, event.TenantID, event.EnvMode, rejection.ID, rejection)
-			return nil
-		}
 		fillPrice = priceCap
+		if spec.Options.PaperFillAtAsk && best.Ask > 0 {
+			paperPinLiveAsk = best.Ask
+		}
 		rs.logger.Info("risk sizer: pinned entry to author ref premium + buffer",
 			"strategy", strategyName,
 			"contract", string(best.ContractSymbol),
@@ -1142,6 +1143,13 @@ func (rs *RiskSizer) handleOptionsSignal(
 	// Propagate all signal tags into Meta for downstream consumers (backtest JSON, etc.).
 	for k, v := range sigRef.Tags {
 		intent.Meta["sig_"+k] = v
+	}
+
+	// Paper-pinned BTO live-ask hint for simbroker. Only stamped when the
+	// strategy's [options].paper_fill_at_ask is true AND the chain returned
+	// a usable Ask. Absent => simbroker keeps existing cap-fill behavior.
+	if paperPinLiveAsk > 0 {
+		intent.Meta["live_ask"] = strconv.FormatFloat(paperPinLiveAsk, 'f', -1, 64)
 	}
 
 	if len(exitRules) > 0 {
@@ -1467,6 +1475,14 @@ func (rs *RiskSizer) emit(ctx context.Context, eventType string, tenantID string
 	ev, err := domain.NewEvent(eventType, tenantID, envMode, idempotencyKey, payload)
 	if err != nil {
 		return
+	}
+	// Overwrite OccurredAt with rs.nowFn() so backtest events carry sim-time
+	// (rs.nowFn returns currentBarTime). Downstream async subscribers (e.g.
+	// execution.Service.handleIntent) read event.OccurredAt for DecidedAt;
+	// without this override the event carries domain.NewEvent's time.Now()
+	// default, which is wall clock and breaks causal consistency in backtest.
+	if rs.nowFn != nil {
+		ev.OccurredAt = rs.nowFn()
 	}
 	_ = rs.eventBus.Publish(ctx, *ev)
 }
