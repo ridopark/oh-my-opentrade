@@ -82,6 +82,13 @@ type Config struct {
 	FeeSchedule   FeeSchedule
 	LatencyMsEq   int // per-equity submission→next-bar latency budget; default 50ms
 	LatencyMsOpt  int // per-option submission→next-bar latency budget; default 200ms
+
+	// OnExpiryFill is invoked once per option position that ExpireOptions
+	// auto-closes at OCC expiry. The payload mirrors the schema decoded by
+	// runner.handleFill / backtest.Collector.onFill so the callback can be
+	// wrapped into a domain.EventFillReceived publish by the caller. nil
+	// disables the expiry sweep emission (positions still get cleared).
+	OnExpiryFill func(payload map[string]any)
 }
 
 // simOrder tracks a submitted order and its fill details.
@@ -156,6 +163,9 @@ type Broker struct {
 	feeSchedule  FeeSchedule
 	latencyMsEq  int
 	latencyMsOpt int
+
+	onExpiryFill                    func(payload map[string]any)
+	optionsExpiredMissingUnderlying atomic.Int64
 
 	mu        sync.RWMutex
 	prices    map[domain.Symbol]float64
@@ -392,6 +402,7 @@ func New(cfg Config, log zerolog.Logger) *Broker {
 		feeSchedule:     fs,
 		latencyMsEq:     latEq,
 		latencyMsOpt:    latOpt,
+		onExpiryFill:    cfg.OnExpiryFill,
 		prices:          make(map[domain.Symbol]float64),
 		barTimes:        make(map[domain.Symbol]time.Time),
 		bars:            make(map[domain.Symbol]Bar),
@@ -986,6 +997,135 @@ func (b *Broker) SubscribeOrderUpdates(ctx context.Context) (<-chan ports.OrderU
 		}
 	}()
 	return out, nil
+}
+
+// SetOnExpiryFill registers a callback invoked once per option position that
+// ExpireOptions auto-closes at OCC expiry. Wired by the backtest runner so
+// the broker can stay decoupled from the EventBus while still emitting
+// FillReceived semantics for the sweep.
+func (b *Broker) SetOnExpiryFill(fn func(payload map[string]any)) {
+	b.mu.Lock()
+	b.onExpiryFill = fn
+	b.mu.Unlock()
+}
+
+// OptionsExpiredMissingUnderlying returns the cumulative count of expiry
+// sweeps that fell back to intrinsic=0 because no underlying price was
+// cached. Surfaces in the backtest data-quality summary.
+func (b *Broker) OptionsExpiredMissingUnderlying() int64 {
+	return b.optionsExpiredMissingUnderlying.Load()
+}
+
+// ExpireOptions closes any option positions whose expiry session-close has
+// passed barTime (inclusive). Emits a SELL fill at intrinsic value via the
+// OnExpiryFill callback (NOT fillCh — execution.handleStreamFill would
+// drop fills without a matching pendingOrder). Mimics OCC auto-exercise.
+// Idempotent: positions with qty<=0 are skipped, so calling multiple
+// times for the same bar is safe.
+//
+// Lock pattern: scan + mutate under b.mu, then release before invoking the
+// callback. SubmitOrder emits under-lock via a non-blocking fillCh send;
+// we cannot do the same here because the callback synchronously publishes
+// EventFillReceived, whose subscribers (collector, compound-equity
+// handler) may re-enter the broker via GetAccountEquity / GetPositions.
+// Re-entry under b.mu would deadlock the RLock.
+func (b *Broker) ExpireOptions(ctx context.Context, barTime time.Time) {
+	_ = ctx // reserved for future cancellation; today the sweep is in-process and synchronous
+
+	type expiredFill struct {
+		symbol       domain.Symbol
+		strategy     string
+		quantity     float64
+		intrinsic    float64
+		rightChar    string
+		expiryDate   string
+		missingPrice bool
+	}
+
+	var expired []expiredFill
+	cal := domain.CalendarFor(domain.AssetClassEquity)
+
+	b.mu.Lock()
+	for _, pos := range b.positions {
+		if pos == nil || pos.quantity <= 0 {
+			continue
+		}
+		underlying, expiry, right, strike, ok := domain.ParseOCC(pos.symbol)
+		if !ok {
+			continue
+		}
+		sessionClose := cal.SessionClose(expiry)
+		if barTime.Before(sessionClose) {
+			continue
+		}
+
+		px, hasPx := b.prices[domain.Symbol(underlying)]
+		var intrinsic float64
+		if hasPx {
+			switch right {
+			case "CALL":
+				intrinsic = px - strike
+			case "PUT":
+				intrinsic = strike - px
+			}
+			if intrinsic < 0 {
+				intrinsic = 0
+			}
+		}
+
+		rightChar := "C"
+		if right == "PUT" {
+			rightChar = "P"
+		}
+
+		expired = append(expired, expiredFill{
+			symbol:       pos.symbol,
+			strategy:     pos.strategy,
+			quantity:     pos.quantity,
+			intrinsic:    intrinsic,
+			rightChar:    rightChar,
+			expiryDate:   expiry.Format("2006-01-02"),
+			missingPrice: !hasPx,
+		})
+
+		pos.quantity = 0
+		pos.strategy = ""
+	}
+	cb := b.onExpiryFill
+	b.mu.Unlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	for _, e := range expired {
+		if e.missingPrice {
+			b.optionsExpiredMissingUnderlying.Add(1)
+			b.log.Warn().
+				Str("symbol", string(e.symbol)).
+				Float64("quantity", e.quantity).
+				Msg("option expired with no underlying price cached; intrinsic=0 emitted")
+		}
+		if cb == nil {
+			continue
+		}
+		payload := map[string]any{
+			"symbol":          string(e.symbol),
+			"strategy":        e.strategy,
+			"side":            "SELL",
+			"direction":       string(domain.DirectionCloseLong),
+			"quantity":        e.quantity,
+			"price":           e.intrinsic,
+			"filled_at":       barTime,
+			"asset_class":     "OPTION",
+			"instrument_type": "OPTION",
+			"option_right":    e.rightChar,
+			"option_expiry":   e.expiryDate,
+			"exit_reason":     "OPTION_EXPIRY",
+			"broker_order_id": fmt.Sprintf("expiry:%s:%d", e.symbol, barTime.UnixNano()),
+		}
+		cb(payload)
+	}
 }
 
 // AccrueFunding applies a funding payment to all open perp positions for symbol.

@@ -2092,6 +2092,9 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			} else {
 				posMonBundle.Service.EvalExitRules(minTime)
+				if r.infra.SimBroker != nil {
+					r.infra.SimBroker.ExpireOptions(ctx, minTime)
+				}
 				r.infra.EventBus.Flush()
 			}
 		}
@@ -2177,6 +2180,9 @@ backtestComplete:
 	if posMonBundle.Service != nil && !lastBarTime.IsZero() {
 		lastClose := domain.CalendarFor(domain.AssetClassEquity).SessionClose(lastBarTime)
 		posMonBundle.Service.EvalExitRules(lastClose)
+		if r.infra.SimBroker != nil {
+			r.infra.SimBroker.ExpireOptions(ctx, lastClose)
+		}
 		r.infra.EventBus.Flush()
 	}
 
@@ -2204,7 +2210,8 @@ backtestComplete:
 		summary = summary.
 			Int64("impact_applied", is.Applied).
 			Int64("impact_noop", is.NoOp).
-			Int64("impact_cap_reject", is.CapReject)
+			Int64("impact_cap_reject", is.CapReject).
+			Int64("options_expired_missing_underlying", r.infra.SimBroker.OptionsExpiredMissingUnderlying())
 	}
 	summary.Msg("backtest data-quality summary")
 

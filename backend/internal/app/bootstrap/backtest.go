@@ -1,7 +1,9 @@
 package bootstrap
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/oh-my-opentrade/backend/internal/adapters/alpaca"
@@ -15,6 +17,7 @@ import (
 	"github.com/oh-my-opentrade/backend/internal/app/optionsimport"
 	"github.com/oh-my-opentrade/backend/internal/app/strategy"
 	"github.com/oh-my-opentrade/backend/internal/config"
+	"github.com/oh-my-opentrade/backend/internal/domain"
 	"github.com/oh-my-opentrade/backend/internal/ports"
 	portstrategy "github.com/oh-my-opentrade/backend/internal/ports/strategy"
 	"github.com/rs/zerolog"
@@ -113,6 +116,30 @@ func BuildBacktestInfra(deps BacktestDeps, slippageBPS int64, initialEquity floa
 		LatencyMsEq:                btCfg.LatencyMsEquity,
 		LatencyMsOpt:               btCfg.LatencyMsOption,
 	}, log.With().Str("component", "simbroker").Logger())
+
+	// Wire the OCC option-expiry sweep so SimBroker can publish synthetic
+	// SELL FillReceived events when contracts cross their expiry session
+	// close. SimBroker stays decoupled from the bus; the callback bridges
+	// to PublishDirect. FreezeHandlers is invoked by the runner before the
+	// replay loop reaches the first ExpireOptions call, so PublishDirect
+	// is safe at invocation time.
+	expiryLog := log.With().Str("component", "simbroker_expiry").Logger()
+	sim.SetOnExpiryFill(func(payload map[string]any) {
+		symStr, _ := payload["symbol"].(string)
+		filledAt, _ := payload["filled_at"].(time.Time)
+		idem := fmt.Sprintf("option-expiry:%s:%d", symStr, filledAt.UnixNano())
+		evt := domain.NewBacktestEvent(
+			domain.EventFillReceived,
+			"default",
+			domain.EnvModePaper,
+			idem,
+			payload,
+			filledAt,
+		)
+		if err := bus.PublishDirect(context.Background(), evt); err != nil {
+			expiryLog.Warn().Err(err).Str("symbol", symStr).Msg("option-expiry FillReceived publish failed")
+		}
+	})
 
 	// Tier 1 market-impact: lazy-construct the bar-volume adapter ONLY when
 	// either knob is non-zero. Zero+zero leaves sim.optionBarVolume == nil so
