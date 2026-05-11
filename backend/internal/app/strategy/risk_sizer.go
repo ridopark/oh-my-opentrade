@@ -939,7 +939,7 @@ func (rs *RiskSizer) handleOptionsSignal(
 		fallbackBPS = *spec.Options.LimitBufferBPS
 	}
 	var fillPrice float64
-	var paperPinLiveAsk float64 // >0 only on the paper-pinned branch when chain Ask is usable AND paper_fill_at_ask is on
+	var paperPinLiveAsk float64
 	spread := best.Ask - best.Bid
 	switch {
 	case event.EnvMode == domain.EnvModePaper && forcedOK && forced.RefPremium > 0:
@@ -960,7 +960,6 @@ func (rs *RiskSizer) handleOptionsSignal(
 			"limit", fillPrice,
 			"mid", midPrice,
 			"ask", best.Ask,
-			"paper_fill_at_ask", spec.Options.PaperFillAtAsk,
 		)
 	case best.Ask > 0 && best.Bid > 0 && spread > 0:
 		fillPrice = midPrice + spreadPct*spread

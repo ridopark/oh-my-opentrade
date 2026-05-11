@@ -1457,13 +1457,10 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 		return mid, nil
 	}
 
-	// Paper-pinned BTO: if the strategy stamped a live ask hint, treat it
-	// as the realistic taker fill anchor. Long entries (BUY-to-open) only;
-	// short entries already hit the bid via the live port below.
-	// - live_ask <= limit => use min(live_ask, limit) as mid, then apply
-	//   the existing tiered half-spread (taker pays mid + half_spread).
-	// - live_ask >  limit => reject; in live the order would not fill.
-	// - missing / <= 0 => fall through to legacy behavior.
+	// Paper-pinned BTO: a strategy-supplied live_ask anchors the taker fill
+	// on the realistic ask rather than the intent's cap. Short entries skip
+	// this branch — they hit the bid via the live port below. live_ask > cap
+	// rejects so the simbroker mirrors IBKR's "won't fill above limit".
 	if !isShortEntry && intent.Meta != nil {
 		if v := intent.Meta["live_ask"]; v != "" {
 			var liveAsk float64
