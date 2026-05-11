@@ -24,6 +24,14 @@ import (
 // runner can record it as a "size rejected" event in cost diagnostics.
 var ErrParticipationCap = errors.New("simbroker: option participation cap exceeded")
 
+// ErrLimitNotMarketable is returned by SubmitOrder for an option entry when
+// the broadcasted live ask exceeds the intent LimitPrice. In live trading
+// IBKR/Alpaca would leave the order unfilled; the simbroker mirrors that by
+// rejecting rather than fabricating a fill at cap. Only emitted when the
+// strategy opts in by stamping intent.Meta["live_ask"] from the paper-pinned
+// BTO path (PaperFillAtAsk).
+var ErrLimitNotMarketable = errors.New("simbroker: option entry live ask above intent limit — not marketable")
+
 // patientExitReasons enumerates intent.Meta["exit_reason"] values that
 // should pay 1.0x impact (resting limit / patient cancel logic). Anything
 // else — including missing — is treated as urgent and pays the urgency
@@ -513,7 +521,11 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			// fills were overstating backtest edge. See
 			// docs/plans/EQUITY-OPTIONS-GAP-PLAN.md §Sprint 6.2.
 			isShortEntry := intent.Direction == domain.DirectionShort
-			fillPrice = b.computeOptionEntryPrice(intent, isShortEntry)
+			entryPrice, entryErr := b.computeOptionEntryPrice(intent, isShortEntry)
+			if entryErr != nil {
+				return "", entryErr
+			}
+			fillPrice = entryPrice
 			// Tier 1 market impact: long entry pays adverse impact (direction=+1);
 			// short entry receives less (direction=-1). Entries are not "urgent"
 			// in the exit sense — no urgency multiplier.
@@ -1439,10 +1451,32 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 //
 // Gated by Broker.optionEntrySpreadEnabled so legacy backtests (flag
 // off) keep the previous mid-fill behavior and remain byte-identical.
-func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) float64 {
+func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) (float64, error) {
 	mid := intent.LimitPrice
 	if !b.optionEntrySpreadEnabled {
-		return mid
+		return mid, nil
+	}
+
+	// Paper-pinned BTO: if the strategy stamped a live ask hint, treat it
+	// as the realistic taker fill anchor. Long entries (BUY-to-open) only;
+	// short entries already hit the bid via the live port below.
+	// - live_ask <= limit => use min(live_ask, limit) as mid, then apply
+	//   the existing tiered half-spread (taker pays mid + half_spread).
+	// - live_ask >  limit => reject; in live the order would not fill.
+	// - missing / <= 0 => fall through to legacy behavior.
+	if !isShortEntry && intent.Meta != nil {
+		if v := intent.Meta["live_ask"]; v != "" {
+			var liveAsk float64
+			if _, err := fmt.Sscanf(v, "%f", &liveAsk); err == nil && liveAsk > 0 {
+				if liveAsk > intent.LimitPrice {
+					return 0, fmt.Errorf("%w: live_ask=%.4f limit=%.4f symbol=%s",
+						ErrLimitNotMarketable, liveAsk, intent.LimitPrice, intent.Symbol)
+				}
+				mid = liveAsk
+				spreadPct := optionSpreadPct(mid) * b.optionExitSpreadMult
+				return mid + mid*spreadPct, nil
+			}
+		}
 	}
 
 	// Live per-contract quote takes priority when available.
@@ -1465,10 +1499,10 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 				q, qErr := b.optionLiveData.Quote(context.Background(), underlying, expiry, strike, right)
 				if qErr == nil {
 					if isShortEntry && q.Bid > 0 {
-						return q.Bid
+						return q.Bid, nil
 					}
 					if !isShortEntry && q.Ask > 0 {
-						return q.Ask
+						return q.Ask, nil
 					}
 				}
 			}
@@ -1489,9 +1523,9 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 		if fill < 0.01 {
 			fill = 0.01
 		}
-		return fill
+		return fill, nil
 	}
-	return mid + half
+	return mid + half, nil
 }
 
 // optionSpreadPct returns the tiered half-spread percentage applied to an
