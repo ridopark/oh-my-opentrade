@@ -2092,11 +2092,15 @@ func (r *Runner) Run(ctx context.Context) error {
 				}
 			} else {
 				posMonBundle.Service.EvalExitRules(minTime)
-				if r.infra.SimBroker != nil {
-					r.infra.SimBroker.ExpireOptions(ctx, minTime)
-				}
 				r.infra.EventBus.Flush()
 			}
+		}
+		// Sweep expired option positions every tick regardless of aggregation
+		// mode. SimBroker is the source of truth for open positions; the
+		// strategy may not have an exit rule that fires on expiry day.
+		if r.infra.SimBroker != nil {
+			r.infra.SimBroker.ExpireOptions(ctx, minTime)
+			r.infra.EventBus.Flush()
 		}
 
 		// Emit progress at most ~5 times/sec (200ms gate).
@@ -2733,6 +2737,13 @@ func (c *runnerSliceCoord) OnTickEnd(ctx context.Context, tickTime time.Time) er
 	c.eventBus.Flush()
 	if c.posMonSvc != nil {
 		c.posMonSvc.EvalExitRules(tickTime)
+		c.eventBus.Flush()
+	}
+	// Sweep expired option positions every tick. SimBroker is the source of
+	// truth for open positions; copytrade has no exit rule that fires on
+	// expiry day, so without this sweep ITM options leak past their expiry.
+	if c.sim != nil {
+		c.sim.ExpireOptions(ctx, tickTime)
 		c.eventBus.Flush()
 	}
 	if c.copytradeReplay != nil {
