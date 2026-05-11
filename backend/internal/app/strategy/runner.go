@@ -2489,7 +2489,7 @@ func (r *Runner) FlushSignalProgress() {
 // handleFill routes a FillReceived event to the matching strategy instance.
 // The strategy uses this to confirm its entry and transition from PendingEntry
 // to an actual PositionSide.
-func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
+func (r *Runner) handleFill(ctx context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(map[string]any)
 	if !ok {
 		return nil
@@ -2541,9 +2541,13 @@ func (r *Runner) handleFill(_ context.Context, event domain.Event) error {
 	}
 
 	instCtx := &instanceContext{
-		now:    filledAt,
-		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
-		emit:   func(_ any) error { return nil },
+		ctx:      ctx,
+		now:      filledAt,
+		logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", symbol),
+		emit:     func(_ any) error { return nil },
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
 	}
 
 	confirmation := start.FillConfirmation{

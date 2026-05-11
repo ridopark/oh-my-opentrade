@@ -98,3 +98,82 @@ func TestRunner_CopytradeFillReceived_DispatchesFillConfirmation(t *testing.T) {
 	// the sentinel.
 	assert.Equal(t, "__copytrade__", seenSym)
 }
+
+// TestRunner_HandleFill_EmitDomainEvent_ReachesBus verifies that handleFill
+// builds an instanceContext with runner/ctx/tenantID/envMode wired through,
+// so a strategy's EmitDomainEvent call from inside a FillConfirmation handler
+// publishes to the bus. Without this wiring, EmitDomainEvent silently falls
+// through to the context's no-op emit and drops the event.
+//
+// Today this fires for CopytradeOrphanFillPayload at copytrade_v1.go:574 (the
+// emit is dead in the FillConfirmation path) and is a prerequisite for the
+// queued-STC drain Stage A.2 depends on.
+func TestRunner_HandleFill_EmitDomainEvent_ReachesBus(t *testing.T) {
+	bus := memory.NewSyncBus()
+	router := strategy.NewRouter()
+	envMode, _ := domain.NewEnvMode("Paper")
+	runner := strategy.NewRunner(bus, router, "test-tenant", envMode, nil)
+
+	// Subscribe to the bus before publishing so we observe the emit.
+	var (
+		mu     sync.Mutex
+		orphan []domain.CopytradeOrphanFillPayload
+	)
+	ctx := context.Background()
+	require.NoError(t, bus.Subscribe(ctx, domain.EventCopytradeOrphanFill, func(_ context.Context, ev domain.Event) error {
+		if p, ok := ev.Payload.(domain.CopytradeOrphanFillPayload); ok {
+			mu.Lock()
+			orphan = append(orphan, p)
+			mu.Unlock()
+		}
+		return nil
+	}))
+
+	fs := newFakeStrategy("copytrade_v1", "1.0.0")
+	fs.onEventFn = func(c strat.Context, _ string, evt any, st strat.State) (strat.State, []strat.Signal, error) {
+		if _, ok := evt.(strat.FillConfirmation); ok {
+			_ = c.EmitDomainEvent(domain.CopytradeOrphanFillPayload{
+				StrategyID:     "copytrade_v1",
+				ContractSymbol: "SPY260507C00724000",
+				FillPrice:      2.475,
+				Qty:            12.0,
+				ObservedAt:     c.Now(),
+			})
+		}
+		return st, nil, nil
+	}
+
+	id, _ := strat.NewInstanceID("copytrade_v1:1.0.0:__copytrade__")
+	inst := strategy.NewInstance(id, fs, nil, strategy.InstanceAssignment{
+		Symbols:  []string{"__copytrade__"},
+		Priority: 90,
+	}, strat.LifecyclePaperActive, nil)
+	require.NoError(t, inst.InitSymbol(newTestCtx(), "__copytrade__", nil))
+	router.Register(inst)
+
+	require.NoError(t, runner.Start(ctx))
+
+	fillEvt, err := domain.NewEvent(
+		domain.EventFillReceived,
+		"test-tenant",
+		envMode,
+		"5114",
+		map[string]any{
+			"symbol":    "SPY260507C00724000",
+			"side":      "BUY",
+			"quantity":  12.0,
+			"price":     2.475,
+			"filled_at": time.Date(2026, 5, 4, 14, 39, 12, 0, time.UTC),
+			"strategy":  "copytrade_v1",
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, bus.Publish(ctx, *fillEvt))
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, orphan, 1, "EmitDomainEvent from FillConfirmation handler must reach the bus")
+	assert.Equal(t, "SPY260507C00724000", orphan[0].ContractSymbol)
+	assert.InDelta(t, 2.475, orphan[0].FillPrice, 1e-9)
+	assert.InDelta(t, 12.0, orphan[0].Qty, 1e-9)
+}

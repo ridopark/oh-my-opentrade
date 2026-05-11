@@ -678,3 +678,196 @@ func TestOrphanFillEmitsEventAndErrorLogs(t *testing.T) {
 	assert.Equal(t, 5.0, orphans[0].Qty)
 	assert.Equal(t, ctx.now, orphans[0].ObservedAt)
 }
+
+// TestCopytrade_STC_QueuedWhilePending_DispatchesOnFillConfirmation locks the
+// queue+drain behavior added to recover the dropped-STC backtest cascade
+// (RC1 in _workspace/copytrade_backtest_fix_plan.md). Pre-fix, a STC arriving
+// in the same minute as the BTO was silently dropped because the BTO was
+// still Pending.
+func TestCopytrade_STC_QueuedWhilePending_DispatchesOnFillConfirmation(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	// STC arrives while BTO still Pending — should queue, not dispatch.
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out at 1.80", 1.80), st)
+	require.NoError(t, err)
+	assert.Empty(t, ctx.exitRequests(), "STC must not dispatch while pending")
+
+	cst := st.(*copytradeState)
+	var contractSym string
+	var queued int
+	for _, pos := range cst.Positions {
+		contractSym = pos.ContractSymbol
+		queued = len(pos.QueuedSTCs)
+		assert.Equal(t, 1.0, pos.RemainingFrac)
+	}
+	assert.Equal(t, 1, queued, "STC must be queued on the Pending position")
+
+	// FillConfirmation should drain the queue.
+	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
+	st, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 1, "queued STC must dispatch on FillConfirmation")
+	assert.InDelta(t, 0.5, exits[0].Fraction, 1e-9)
+	assert.Equal(t, "half out", exits[0].Reason)
+	assert.Equal(t, contractSym, exits[0].ContractSymbol)
+
+	for _, pos := range st.(*copytradeState).Positions {
+		assert.False(t, pos.Pending)
+		assert.InDelta(t, 0.5, pos.RemainingFrac, 1e-9, "queue drain must apply the partial")
+		assert.Empty(t, pos.QueuedSTCs, "queue must be cleared after drain")
+	}
+}
+
+// TestCopytrade_STC_MultipleQueued_DispatchInOrder confirms FIFO drain when
+// several STCs queue against the same Pending BTO.
+func TestCopytrade_STC_MultipleQueued_DispatchInOrder(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	for _, tail := range []string{"trim at 1.50", "trim at 1.60", "trim at 1.70"} {
+		st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", tail, 1.50), st)
+		require.NoError(t, err)
+	}
+	assert.Empty(t, ctx.exitRequests(), "queued STCs must not dispatch while pending")
+
+	var contractSym string
+	for _, pos := range st.(*copytradeState).Positions {
+		contractSym = pos.ContractSymbol
+		assert.Equal(t, 3, len(pos.QueuedSTCs))
+	}
+
+	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
+	_, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 3, "all queued STCs must dispatch in order")
+	for _, e := range exits {
+		assert.Equal(t, "trim", e.Reason)
+		assert.InDelta(t, 0.25, e.Fraction, 1e-9)
+	}
+}
+
+// TestCopytrade_STC_QueuedFullCloseShortCircuits verifies that once a queued
+// drain produces a full close, subsequent queued STCs are NOT dispatched
+// (no point exiting an already-closed position).
+func TestCopytrade_STC_QueuedFullCloseShortCircuits(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	// 1: partial. 2: all out (full close). 3: another STC that must NOT fire.
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out at 1.80", 1.80), st)
+	require.NoError(t, err)
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "all out at 2.00", 2.00), st)
+	require.NoError(t, err)
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "trim at 2.10", 2.10), st)
+	require.NoError(t, err)
+
+	var contractSym string
+	for _, pos := range st.(*copytradeState).Positions {
+		contractSym = pos.ContractSymbol
+		assert.Equal(t, 3, len(pos.QueuedSTCs))
+	}
+
+	fc := start.FillConfirmation{Symbol: contractSym, Side: start.SideBuy, Quantity: 5, Price: 1.25}
+	st, _, err = s.OnEvent(ctx, "__copytrade__", fc, st)
+	require.NoError(t, err)
+
+	exits := ctx.exitRequests()
+	require.Len(t, exits, 2, "drain stops after full-close STC; trailing STC must not fire")
+	assert.InDelta(t, 0.5, exits[0].Fraction, 1e-9, "first dispatch is the partial")
+	assert.InDelta(t, 1.0, exits[1].Fraction, 1e-9, "second dispatch is the full close")
+
+	cst := st.(*copytradeState)
+	assert.Empty(t, cst.Positions, "full close from drain must delete the position")
+}
+
+// TestCopytrade_QueuedSTCs_DiscardedOnEntryRejection ensures a rejected BTO
+// drops any queued STCs without emitting orphan exits against a position the
+// broker never opened.
+func TestCopytrade_QueuedSTCs_DiscardedOnEntryRejection(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("BTO", "AAPL", 190, "C", "starter", 1.20), st)
+	require.NoError(t, err)
+
+	st, _, err = s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80), st)
+	require.NoError(t, err)
+
+	var contractSym string
+	for _, pos := range st.(*copytradeState).Positions {
+		contractSym = pos.ContractSymbol
+		assert.Equal(t, 1, len(pos.QueuedSTCs))
+	}
+
+	rej := start.EntryRejection{Symbol: contractSym, Side: start.SideBuy, Reason: "options_chain_empty"}
+	st, _, err = s.OnEvent(ctx, "__copytrade__", rej, st)
+	require.NoError(t, err)
+
+	assert.Empty(t, ctx.exitRequests(), "rejection must not dispatch queued STCs")
+	cst := st.(*copytradeState)
+	assert.Empty(t, cst.Positions, "rejection deletes the pending position")
+}
+
+// TestCopytrade_QueuedSTCs_DiscardedOnTTLExpiry mirrors the rejection case for
+// the TTL sweep path: queued STCs are dropped without emitting orphan exits.
+func TestCopytrade_QueuedSTCs_DiscardedOnTTLExpiry(t *testing.T) {
+	params := copytradeTTLParams(30, 30)
+	s, st := initCopytrade(t, params)
+	ctx := newCopyCtx()
+	ctx.envMode = start.EnvModePaper
+
+	// Plant a Pending position older than the TTL with a queued STC.
+	cst := st.(*copytradeState)
+	base := positionBase("alice", "AAPL", time.Date(2026, 4, 25, 0, 0, 0, 0, time.UTC), 190, "CALL")
+	contractSym := "AAPL260425C00190000"
+	cst.Positions[positionKey(base, 1)] = &copytradePosition{
+		ContractSymbol: contractSym,
+		Base:           base,
+		OpenedAt:       ctx.now.Add(-2 * time.Minute),
+		RemainingFrac:  1.0,
+		Generation:     1,
+		Pending:        true,
+		QueuedSTCs: []start.CopytradeSignal{
+			copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.80),
+		},
+	}
+	cst.Generations[base] = 1
+
+	// expireStalePending runs at the head of OnEvent — any event triggers it.
+	// Use an STC for a different unknown symbol to keep state clean.
+	_, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "NONEXIST", 1, "C", "noop", 0), st)
+	require.NoError(t, err)
+
+	assert.Empty(t, ctx.exitRequests(), "TTL expiry must not dispatch queued STCs")
+	expired := ctx.entryExpired()
+	require.Len(t, expired, 1, "TTL sweep must still emit EntryExpired for the position")
+	assert.Equal(t, contractSym, expired[0].ContractSymbol)
+}
+
+// TestCopytrade_STC_WithoutBTO_NotQueued preserves the prior drop behavior:
+// an STC with no Generations[base] entry has no position to queue against.
+func TestCopytrade_STC_WithoutBTO_NotQueued(t *testing.T) {
+	s, st := initCopytrade(t, copytradeDefaultParams())
+	ctx := newCopyCtx()
+
+	st, _, err := s.OnEvent(ctx, "__copytrade__", copytradeSignal("STC", "AAPL", 190, "C", "half out", 1.50), st)
+	require.NoError(t, err)
+	assert.Empty(t, ctx.exitRequests())
+
+	cst := st.(*copytradeState)
+	assert.Empty(t, cst.Positions, "STC with no prior BTO must not create a position")
+}
