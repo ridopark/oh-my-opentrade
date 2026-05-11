@@ -737,20 +737,6 @@ func (s *Service) processFill(fill fillMsg) {
 
 		pos.Quantity -= fill.Quantity
 		if pos.Quantity <= 1e-9 {
-			// Bus-ordering race (backtest): if the OrderSubmitted handler
-			// hasn't run yet for this exit, PendingExitOrderIDs won't carry
-			// the id. Mark it as recently-filled so the later
-			// processExitSubmitted call skips its in-flight setup on a
-			// position we're about to delete. Belt-and-suspenders: the
-			// "position not found" guard in processExitSubmitted also
-			// catches the deleted-position case.
-			if fill.BrokerOrderID != "" {
-				if pos.PendingExitOrderIDs == nil {
-					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
-				} else if _, tracked := pos.PendingExitOrderIDs[fill.BrokerOrderID]; !tracked {
-					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
-				}
-			}
 			s.log.Info().
 				Str("symbol", string(fill.Symbol)).
 				Float64("exit_price", fill.Price).
@@ -781,11 +767,7 @@ func (s *Service) processFill(fill fillMsg) {
 			// single-ExitPending invariant says the tick loop's guard is the
 			// only thing blocking a third order from firing in the gap.
 			if fill.BrokerOrderID != "" {
-				tracked := false
-				if pos.PendingExitOrderIDs != nil {
-					_, tracked = pos.PendingExitOrderIDs[fill.BrokerOrderID]
-				}
-				if tracked {
+				if _, tracked := pos.PendingExitOrderIDs[fill.BrokerOrderID]; tracked {
 					delete(pos.PendingExitOrderIDs, fill.BrokerOrderID)
 					if len(pos.PendingExitOrderIDs) == 0 {
 						pos.ExitPending = false
@@ -800,8 +782,7 @@ func (s *Service) processFill(fill fillMsg) {
 					// Bus-ordering race (backtest): FillReceived arrived before
 					// the OrderSubmitted handler set up tracking. Stash the id
 					// so the later processExitSubmitted call skips its
-					// in-flight setup on a position whose exit has already
-					// completed (or partially completed) the round-trip.
+					// in-flight setup.
 					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
 				}
 			}
