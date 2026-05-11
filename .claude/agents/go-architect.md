@@ -99,6 +99,16 @@ Detection: write a regression test that calls Update twice for the same `(sym, t
 
 Anti-pattern signal: a service has `Update` AND `Subscribe`, AND two consumers both call `Update` on the same instance, AND the consumers also Subscribe. Whichever consumer calls Update first wins the callback fan-out; the other one silently starves. Pre-fix code is the canonical example.
 
+### Bus-ordering races between sync-inline and channel-queued handlers (backtest)
+
+In the 2026-05-11 session, copytrade backtest fired "exit cancel never reached terminal — manual intervention required" 956K+ times across 4 months. Root cause: `positionmonitor.handleFillEvent` had an inline `disableTickLoop` branch that called `processFill` directly, while `handleOrderSubmitted` pushed to a channel consumed by the tick drain. SimBroker emitted EventFillReceived BEFORE EventOrderSubmitted's handler had run, so processFill saw an empty `PendingExitOrderIDs` and no-op'd, then processExitSubmitted stamped `ExitPending=true` on an order that had already filled. handleExitTimeout then cycled forever trying to cancel a terminal order. Iter 1's "clear ExitPending on terminal partial fill" fix was dead code in this scenario because the tracking hadn't happened yet — the partial-cleanup branch's `if pos.PendingExitOrderIDs[id]; tracked` was always false in the race.
+
+Fix: a service-scope `recentlyFilledOrders map[string]struct{}` populated by processFill when a fill arrives for an untracked broker_order_id, consumed (and deleted) by processExitSubmitted to skip its in-flight setup. Both writers hold the same `s.mu`. Soft-warn at 1024 entries instead of TTL eviction (a leak indicates a structural problem worth investigating, not masking).
+
+Rule: when a service exposes two related event handlers AND one of them has a sync-inline branch (e.g. for backtest mode) while the other is channel-queued, the two paths can race even though both are "in the same actor". Detect at design time by asking: "does any code path call `processX` directly while another path queues `processY`? If yes, can the order matter for state?" If state in one depends on tracking installed by the other, you need either (a) the same delivery shape for both (both inline or both queued) or (b) an explicit dedup primitive like recentlyFilledOrders.
+
+Anti-pattern signal: `handleA` has `if disableX { processA(); return }` while `handleB` has `select { case s.bMsg <- ... }`. The first runs to completion synchronously inside the bus dispatch; the second returns immediately. If the publisher emits A then B in quick succession and the bus dispatch is synchronous in registration order, B's handler-side code runs LATER even though the event arrived earlier. Iter 1's failure is the canonical example: the OrderSubmitted handler took the channel path while the FillReceived handler took the inline path, inverting the natural producer ordering.
+
 ## Engine Change Implementation Protocol
 
 When invoked by strategy-tuner for an engine change:

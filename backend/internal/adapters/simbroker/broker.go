@@ -24,6 +24,14 @@ import (
 // runner can record it as a "size rejected" event in cost diagnostics.
 var ErrParticipationCap = errors.New("simbroker: option participation cap exceeded")
 
+// ErrLimitNotMarketable is returned by SubmitOrder for an option entry when
+// the broadcasted live ask exceeds the intent LimitPrice. In live trading
+// IBKR/Alpaca would leave the order unfilled; the simbroker mirrors that by
+// rejecting rather than fabricating a fill at cap. Only emitted when the
+// strategy opts in by stamping intent.Meta["live_ask"] from the paper-pinned
+// BTO path (PaperFillAtAsk).
+var ErrLimitNotMarketable = errors.New("simbroker: option entry live ask above intent limit — not marketable")
+
 // patientExitReasons enumerates intent.Meta["exit_reason"] values that
 // should pay 1.0x impact (resting limit / patient cancel logic). Anything
 // else — including missing — is treated as urgent and pays the urgency
@@ -468,6 +476,16 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 	}
 
 	barTime := b.barTimes[priceSymbol]
+	// FilledAt source: prefer intent.DecidedAt (set by execution.Service from
+	// s.nowFn()). Fall back to the cached underlying bar time for legacy
+	// callers (paired-leg submitter, dust-sweep, broker-internal recursion,
+	// tests). Fallback is transitional; tracked for removal once all upstream
+	// SubmitOrder callers stamp DecidedAt unconditionally.
+	decidedAt := intent.DecidedAt
+	if decidedAt.IsZero() {
+		decidedAt = barTime
+		b.log.Debug().Str("symbol", string(intent.Symbol)).Msg("simbroker: DecidedAt fallback to barTime")
+	}
 
 	var fillPrice float64
 	var side string
@@ -503,7 +521,11 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			// fills were overstating backtest edge. See
 			// docs/plans/EQUITY-OPTIONS-GAP-PLAN.md §Sprint 6.2.
 			isShortEntry := intent.Direction == domain.DirectionShort
-			fillPrice = b.computeOptionEntryPrice(intent, isShortEntry)
+			entryPrice, entryErr := b.computeOptionEntryPrice(intent, isShortEntry)
+			if entryErr != nil {
+				return "", entryErr
+			}
+			fillPrice = entryPrice
 			// Tier 1 market impact: long entry pays adverse impact (direction=+1);
 			// short entry receives less (direction=-1). Entries are not "urgent"
 			// in the exit sense — no urgency multiplier.
@@ -663,7 +685,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 		orderID:   orderID,
 		fillPrice: fillPrice,
 		fillQty:   intent.Quantity,
-		filledAt:  barTime,
+		filledAt:  decidedAt,
 		side:      side,
 	}
 
@@ -745,7 +767,7 @@ func (b *Broker) SubmitOrder(ctx context.Context, intent domain.OrderIntent) (st
 			Price:          fillPrice,
 			FilledQty:      intent.Quantity,
 			FilledAvgPrice: fillPrice,
-			FilledAt:       barTime,
+			FilledAt:       decidedAt,
 			Commission:     fees.Commission,
 			RegulatoryFee:  fees.Regulatory,
 			ExchangeFee:    fees.Exchange,
@@ -1429,10 +1451,29 @@ func (b *Broker) computeOptionExitPrice(intent domain.OrderIntent, underlyingPri
 //
 // Gated by Broker.optionEntrySpreadEnabled so legacy backtests (flag
 // off) keep the previous mid-fill behavior and remain byte-identical.
-func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) float64 {
+func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry bool) (float64, error) {
 	mid := intent.LimitPrice
 	if !b.optionEntrySpreadEnabled {
-		return mid
+		return mid, nil
+	}
+
+	// Paper-pinned BTO: a strategy-supplied live_ask anchors the taker fill
+	// on the realistic ask rather than the intent's cap. Short entries skip
+	// this branch — they hit the bid via the live port below. live_ask > cap
+	// rejects so the simbroker mirrors IBKR's "won't fill above limit".
+	if !isShortEntry && intent.Meta != nil {
+		if v := intent.Meta["live_ask"]; v != "" {
+			var liveAsk float64
+			if _, err := fmt.Sscanf(v, "%f", &liveAsk); err == nil && liveAsk > 0 {
+				if liveAsk > intent.LimitPrice {
+					return 0, fmt.Errorf("%w: live_ask=%.4f limit=%.4f symbol=%s",
+						ErrLimitNotMarketable, liveAsk, intent.LimitPrice, intent.Symbol)
+				}
+				mid = liveAsk
+				spreadPct := optionSpreadPct(mid) * b.optionExitSpreadMult
+				return mid + mid*spreadPct, nil
+			}
+		}
 	}
 
 	// Live per-contract quote takes priority when available.
@@ -1455,10 +1496,10 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 				q, qErr := b.optionLiveData.Quote(context.Background(), underlying, expiry, strike, right)
 				if qErr == nil {
 					if isShortEntry && q.Bid > 0 {
-						return q.Bid
+						return q.Bid, nil
 					}
 					if !isShortEntry && q.Ask > 0 {
-						return q.Ask
+						return q.Ask, nil
 					}
 				}
 			}
@@ -1479,9 +1520,9 @@ func (b *Broker) computeOptionEntryPrice(intent domain.OrderIntent, isShortEntry
 		if fill < 0.01 {
 			fill = 0.01
 		}
-		return fill
+		return fill, nil
 	}
-	return mid + half
+	return mid + half, nil
 }
 
 // optionSpreadPct returns the tiered half-spread percentage applied to an

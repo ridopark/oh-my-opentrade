@@ -730,3 +730,81 @@ func TestService_PositionGate_InflightClearedAfterFill(t *testing.T) {
 	bus.Flush()
 	assert.Equal(t, 2, broker.SubmitOrderCalls, "second entry should be allowed after fill clears inflight")
 }
+
+// TestHandleIntent_StampsDecidedAtFromEventOccurredAt pins the contract:
+// execution.Service stamps intent.DecidedAt from event.OccurredAt (the
+// sim-time the strategy emitted) -- NOT from s.nowFn() which reads the
+// latest atomic bar tick at async-handler-runtime and lags the publish
+// moment. SimBroker uses DecidedAt for FilledAt; reading s.nowFn() races
+// the bar loop and produces fills causally earlier than the signal.
+func TestHandleIntent_StampsDecidedAtFromEventOccurredAt(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	riskEngine := execution.NewRiskEngine(0.02)
+	slippageGuard := execution.NewSlippageGuard(quoteProvider)
+	nowFnTime := time.Date(2026, 2, 20, 18, 41, 0, 0, time.UTC) // race-lagging value
+	publishTime := time.Date(2026, 2, 26, 20, 48, 31, 0, time.UTC)
+	nowFn := func() time.Time { return nowFnTime }
+	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFn)
+
+	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, zerolog.Nop(),
+		execution.WithNowFunc(nowFn),
+	)
+
+	var captured domain.OrderIntent
+	broker.SubmitOrderFunc = func(_ context.Context, intent domain.OrderIntent) (string, error) {
+		captured = intent
+		return "order-decidedat", nil
+	}
+
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
+
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	intentEvt.OccurredAt = publishTime // simulate publisher stamping sim-time
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls)
+	assert.Equal(t, publishTime, captured.DecidedAt,
+		"handleIntent must prefer event.OccurredAt over s.nowFn() to avoid the async-handler race")
+}
+
+// TestHandleIntent_StampsDecidedAtFromNowFn_FallbackOnZeroOccurredAt pins
+// the fallback: when the event's OccurredAt is zero (live path or test
+// stubs that don't stamp), DecidedAt falls back to s.nowFn().
+func TestHandleIntent_StampsDecidedAtFromNowFn_FallbackOnZeroOccurredAt(t *testing.T) {
+	bus := memory.NewBus()
+	broker := &mockBroker{}
+	repo := &mockRepository{}
+	quoteProvider := &mockQuoteProvider{Bid: 49950.0, Ask: 50050.0}
+
+	riskEngine := execution.NewRiskEngine(0.02)
+	slippageGuard := execution.NewSlippageGuard(quoteProvider)
+	fixed := time.Date(2026, 2, 26, 20, 48, 31, 0, time.UTC)
+	nowFn := func() time.Time { return fixed }
+	killSwitch := execution.NewKillSwitch(3, 2*time.Minute, 15*time.Minute, nowFn)
+
+	svc := execution.NewService(bus, broker, repo, riskEngine, slippageGuard, killSwitch, nil, 100000.0, zerolog.Nop(),
+		execution.WithNowFunc(nowFn),
+	)
+
+	var captured domain.OrderIntent
+	broker.SubmitOrderFunc = func(_ context.Context, intent domain.OrderIntent) (string, error) {
+		captured = intent
+		return "order-decidedat-fallback", nil
+	}
+
+	require.NoError(t, svc.Start(context.Background(), "test", domain.EnvModePaper))
+
+	intentEvt := createOrderIntentEvent(t, domain.DirectionLong)
+	intentEvt.OccurredAt = time.Time{} // zero value, defensive fallback
+	require.NoError(t, bus.Publish(context.Background(), intentEvt))
+	bus.Flush()
+
+	assert.Equal(t, 1, broker.SubmitOrderCalls)
+	assert.Equal(t, fixed, captured.DecidedAt,
+		"zero OccurredAt must fall back to s.nowFn()")
+}

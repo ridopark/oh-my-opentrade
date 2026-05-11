@@ -28,7 +28,7 @@ func TestLoadSpecFile_CopytradeV1_ParsesCleanly(t *testing.T) {
 	assert.Equal(t, 0.15, spec.Params["trail_giveback_pct"])
 	assert.Equal(t, 0.33, spec.Params["default_stc_fraction"])
 	assert.Equal(t, int64(1000), spec.Params["risk_per_trade_bps"])
-	assert.Equal(t, int64(12), spec.Params["max_positions"])
+	assert.Equal(t, int64(0), spec.Params["max_positions"])
 
 	// partial_fractions must live at top of [params] as a list of tables.
 	// Nested-under-wrong-header bugs silently produce empty/missing entries

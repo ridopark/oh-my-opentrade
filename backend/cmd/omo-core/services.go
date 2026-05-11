@@ -559,13 +559,22 @@ func initStrategyPipeline(cfg *config.Config, infra *infraDeps, svc *appServices
 			continue
 		}
 
-		if hookRef.Name == "copytrade_v1" {
-			continue
+		// Filter sentinel routing symbols (shaped __name__) out of BaseSymbols
+		// before registering with the symbol router. Sentinels are event-driven
+		// routing keys (copytrade_v1, tradingthetrend_v1) — they are NOT real
+		// tickers and Alpaca's historical-bars endpoint rejects them with 400.
+		// If a strategy's routing list is purely sentinels, the empty BaseSymbols
+		// slice causes symbolrouter to skip the strategy entirely (its
+		// EmitFallbackForMissing has a len==0 guard).
+		filteredSymbols := make([]string, 0, len(spec.Routing.Symbols))
+		for _, sym := range spec.Routing.Symbols {
+			if !bootstrap.IsSentinelSymbol(sym) {
+				filteredSymbols = append(filteredSymbols, sym)
+			}
 		}
-
 		svc.symRouterSpecs = append(svc.symRouterSpecs, symbolrouter.StrategySpec{
 			Key:           spec.ID.String(),
-			BaseSymbols:   spec.Routing.Symbols,
+			BaseSymbols:   filteredSymbols,
 			WatchlistMode: spec.Routing.WatchlistMode,
 		})
 	}

@@ -36,6 +36,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 	ivAtEntryStr, _ := payload["iv_at_entry"].(string)
 	deltaAtEntryStr, _ := payload["delta_at_entry"].(string)
 	signalTags, _ := payload["signal_tags"].(map[string]string)
+	brokerOrderID, _ := payload["broker_order_id"].(string)
 
 	if symbol == "" || price <= 0 || quantity <= 0 {
 		return nil
@@ -70,6 +71,7 @@ func (s *Service) handleFillEvent(_ context.Context, event domain.Event) error {
 		IVAtEntry:      ivAtEntry,
 		DeltaAtEntry:   deltaAtEntry,
 		SignalTags:     signalTags,
+		BrokerOrderID:  brokerOrderID,
 	}
 
 	// Backtest mode: process inline so s.positions is populated before bus

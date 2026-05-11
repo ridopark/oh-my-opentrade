@@ -265,3 +265,68 @@ func TestHandleCopytradeExitRequest_IgnoresRefPremiumInLive(t *testing.T) {
 	_, stampedMeta := msg.Intent.Meta["copytrade_exit_ref_premium"]
 	assert.False(t, stampedMeta, "Live exit intent Meta must not carry the pin key")
 }
+
+// TestPartialFracKey_SurvivesAcrossTriggerExitCalls_ClearedOnFill is the
+// regression test for followup A from the 2026-05-11 review. Pre-fix,
+// exit_eval.go deleted `copytrade_exit_qty_frac` after the first triggerExit,
+// so a re-pegged partial intent re-sized against full pos.Quantity (full
+// close on retry). The fix moves the cleanup to processFill so the frac
+// survives re-peg cycles and only clears after the partial fills.
+func TestPartialFracKey_SurvivesAcrossTriggerExitCalls_ClearedOnFill(t *testing.T) {
+	svc := newCopytradeExitService()
+	contract := domain.Symbol("AAPL260425C00190000")
+	pos := seedOptionPosition(t, svc, contract, 30)
+
+	// First STC partial: 0.33 of 30 → ceil = 10.
+	payload := domain.CopytradeExitRequestPayload{
+		TenantID:       svc.tenantID,
+		EnvMode:        string(svc.envMode),
+		Strategy:       "copytrade_v1",
+		Symbol:         "AAPL",
+		ContractSymbol: string(contract),
+		Fraction:       0.33,
+		Reason:         "partial",
+	}
+	require.NoError(t, svc.handleCopytradeExitRequest(context.Background(), domain.Event{
+		Type:    domain.EventCopytradeExitRequest,
+		Payload: payload,
+	}))
+
+	require.GreaterOrEqual(t, len(svc.outbox), 1, "partial exit should queue intent")
+	first := <-svc.outbox
+	assert.InDelta(t, 10.0, first.Intent.Quantity, 1e-9, "first attempt should size to ceil(30*0.33)=10")
+
+	// Frac key must survive the first triggerExit so the re-peg path
+	// re-derives the same partial size against the still-unchanged
+	// pos.Quantity. Pre-fix, this assertion failed (key was deleted).
+	frac, has := pos.CustomState["copytrade_exit_qty_frac"]
+	require.True(t, has, "frac key must persist after triggerExit for re-peg re-use")
+	assert.InDelta(t, 0.33, frac, 1e-9)
+
+	// Simulate a re-peg by clearing the in-flight exit gate and calling
+	// triggerExit directly with the synthetic copytrade STC rule. The
+	// outbox should receive another intent at qty=10, not qty=30.
+	pos.PendingExitOrderIDs = nil
+	pos.ExitPending = false
+	svc.triggerExit(pos, domain.ExitRule{Type: domain.ExitRuleCopytradeSTC}, "repeg/1", pos.EntryPrice, time.Now())
+	require.GreaterOrEqual(t, len(svc.outbox), 1, "re-peg should re-queue intent")
+	second := <-svc.outbox
+	assert.InDelta(t, 10.0, second.Intent.Quantity, 1e-9, "re-peg must preserve partial qty, not upsize to 30")
+
+	// Now simulate the partial fill landing. After processFill, the frac
+	// key must be cleared so a subsequent chandelier/stop trigger sizes
+	// against the remaining position without re-applying the stale partial.
+	svc.processFill(fillMsg{
+		Symbol:    contract,
+		Side:      "SELL",
+		Direction: string(domain.DirectionCloseLong),
+		Price:     1.30,
+		Quantity:  10,
+		FilledAt:  time.Now(),
+		Strategy:  "copytrade_v1",
+	})
+	_, stillHas := pos.CustomState["copytrade_exit_qty_frac"]
+	assert.False(t, stillHas, "frac key must clear after partial fill confirms")
+	assert.InDelta(t, 20.0, pos.Quantity, 1e-9, "remaining qty should be 30-10=20")
+}
+
