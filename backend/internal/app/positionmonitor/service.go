@@ -53,7 +53,15 @@ type Service struct {
 	ghostMissCounts      map[string]int                       // key: position key → consecutive broker-miss count
 	pendingGlobalOrphans map[domain.Symbol]int                // key: symbol → consecutive global-reconcile misses
 	pendingGlobalDrifts  map[domain.Symbol]int                // key: symbol → consecutive broker>DB drift observations
-	mu                   sync.RWMutex                         // protects positions for concurrent reads (e.g. PositionCount)
+	// recentlyFilledOrders tracks broker_order_ids whose FillReceived event
+	// landed before the corresponding OrderSubmitted handler set up tracking.
+	// Set by processFill when an exit fill arrives for an untracked order;
+	// consumed (and cleared) by processExitSubmitted to avoid stamping
+	// ExitPending=true on an already-completed order. Backtest-only race
+	// surface: live brokers stream submit BEFORE fill on the same connection
+	// so the natural ordering holds.
+	recentlyFilledOrders map[string]struct{}
+	mu                   sync.RWMutex // protects positions for concurrent reads (e.g. PositionCount)
 
 	barDurCache         map[string]time.Duration // cached barDurationFor results
 	snapshotFn          IndicatorSnapshotFunc
@@ -427,6 +435,7 @@ func NewService(
 		ghostMissCounts:         make(map[string]int),
 		pendingGlobalOrphans:    make(map[domain.Symbol]int),
 		pendingGlobalDrifts:     make(map[domain.Symbol]int),
+		recentlyFilledOrders:    make(map[string]struct{}),
 		tickInterval:            1 * time.Second,
 		optionsPollInterval:     30 * time.Second,
 		reconcileInterval:       defaultReconcileInterval,
@@ -577,9 +586,33 @@ func (s *Service) pollOptionPrices(ctx context.Context) {
 	}
 }
 
+// markRecentlyFilledUnsafe records a broker_order_id whose exit fill
+// arrived before its OrderSubmitted handler ran. Caller must hold s.mu.
+// Backtest-only race surface (see Service.recentlyFilledOrders doc).
+// Entries are short-lived: each is consumed by the very-next
+// processExitSubmitted call carrying the same id. The 1024 soft-warn
+// guard surfaces a leak (dropped processExitSubmitted) without adding
+// TTL bookkeeping that would mask a real ordering bug.
+func (s *Service) markRecentlyFilledUnsafe(brokerOrderID string) {
+	s.recentlyFilledOrders[brokerOrderID] = struct{}{}
+	if n := len(s.recentlyFilledOrders); n > 1024 {
+		s.log.Warn().
+			Int("size", n).
+			Msg("recentlyFilledOrders map exceeds 1024 entries — possible bus-ordering leak")
+	}
+}
+
 func (s *Service) processExitSubmitted(msg exitOrderSubmittedMsg) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, alreadyFilled := s.recentlyFilledOrders[msg.BrokerOrderID]; alreadyFilled {
+		delete(s.recentlyFilledOrders, msg.BrokerOrderID)
+		s.log.Debug().
+			Str("symbol", string(msg.Symbol)).
+			Str("broker_order_id", msg.BrokerOrderID).
+			Msg("exit order submit arrived after fill — skipping in-flight setup")
+		return
+	}
 	key := fmt.Sprintf("%s:%s:%s", s.tenantID, s.envMode, msg.Symbol)
 	pos, ok := s.positions[key]
 	if !ok {
@@ -704,6 +737,20 @@ func (s *Service) processFill(fill fillMsg) {
 
 		pos.Quantity -= fill.Quantity
 		if pos.Quantity <= 1e-9 {
+			// Bus-ordering race (backtest): if the OrderSubmitted handler
+			// hasn't run yet for this exit, PendingExitOrderIDs won't carry
+			// the id. Mark it as recently-filled so the later
+			// processExitSubmitted call skips its in-flight setup on a
+			// position we're about to delete. Belt-and-suspenders: the
+			// "position not found" guard in processExitSubmitted also
+			// catches the deleted-position case.
+			if fill.BrokerOrderID != "" {
+				if pos.PendingExitOrderIDs == nil {
+					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
+				} else if _, tracked := pos.PendingExitOrderIDs[fill.BrokerOrderID]; !tracked {
+					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
+				}
+			}
 			s.log.Info().
 				Str("symbol", string(fill.Symbol)).
 				Float64("exit_price", fill.Price).
@@ -733,8 +780,12 @@ func (s *Service) processFill(fill fillMsg) {
 			// are still working, leave ExitPending untouched: the SOFI-1605
 			// single-ExitPending invariant says the tick loop's guard is the
 			// only thing blocking a third order from firing in the gap.
-			if fill.BrokerOrderID != "" && pos.PendingExitOrderIDs != nil {
-				if _, tracked := pos.PendingExitOrderIDs[fill.BrokerOrderID]; tracked {
+			if fill.BrokerOrderID != "" {
+				tracked := false
+				if pos.PendingExitOrderIDs != nil {
+					_, tracked = pos.PendingExitOrderIDs[fill.BrokerOrderID]
+				}
+				if tracked {
 					delete(pos.PendingExitOrderIDs, fill.BrokerOrderID)
 					if len(pos.PendingExitOrderIDs) == 0 {
 						pos.ExitPending = false
@@ -745,6 +796,13 @@ func (s *Service) processFill(fill fillMsg) {
 							s.positionGate.ClearInflightExit(pos.TenantID, pos.EnvMode, pos.Symbol)
 						}
 					}
+				} else {
+					// Bus-ordering race (backtest): FillReceived arrived before
+					// the OrderSubmitted handler set up tracking. Stash the id
+					// so the later processExitSubmitted call skips its
+					// in-flight setup on a position whose exit has already
+					// completed (or partially completed) the round-trip.
+					s.markRecentlyFilledUnsafe(fill.BrokerOrderID)
 				}
 			}
 			s.log.Info().

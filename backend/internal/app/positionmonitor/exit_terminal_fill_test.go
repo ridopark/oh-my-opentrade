@@ -147,3 +147,87 @@ func TestProcessFill_PartialFill_ClearsExitPendingOnTerminal(t *testing.T) {
 		})
 	}
 }
+
+// TestRaceFillBeforeSubmitted_DedupViaRecentlyFilled exercises the
+// bus-ordering race fix: in backtest the SimBroker's FillReceived can
+// land BEFORE the OrderSubmitted handler set up tracking, so processFill
+// must stash the broker_order_id and processExitSubmitted must skip its
+// in-flight setup when the id is already marked filled.
+func TestRaceFillBeforeSubmitted_DedupViaRecentlyFilled(t *testing.T) {
+	contract := domain.Symbol("AMZN260202C00245000")
+	svc := newCopytradeExitService()
+	pos := seedOptionPosition(t, svc, contract, 5)
+	// Fresh position: no ExitPending state, no tracked exit ids.
+	pos.ExitPending = false
+	pos.ExitOrderID = ""
+	pos.PendingExitOrderIDs = nil
+
+	// processFill arrives first for an untracked broker_order_id.
+	svc.processFill(fillMsg{
+		Symbol:        contract,
+		Side:          "SELL",
+		Direction:     string(domain.DirectionCloseLong),
+		Price:         1.30,
+		Quantity:      2,
+		FilledAt:      time.Now(),
+		Strategy:      "copytrade_v1",
+		BrokerOrderID: "ord-A",
+	})
+
+	_, marked := svc.recentlyFilledOrders["ord-A"]
+	require.True(t, marked, "processFill must stash untracked broker_order_id in recentlyFilledOrders")
+
+	// processExitSubmitted arrives later for the same id.
+	svc.processExitSubmitted(exitOrderSubmittedMsg{
+		Symbol:        contract,
+		BrokerOrderID: "ord-A",
+		Direction:     string(domain.DirectionCloseLong),
+	})
+
+	assert.False(t, pos.ExitPending, "ExitPending must NOT be stamped on an already-filled order")
+	assert.Equal(t, "", pos.ExitOrderID, "ExitOrderID must NOT be stamped on an already-filled order")
+	_, stillMarked := svc.recentlyFilledOrders["ord-A"]
+	assert.False(t, stillMarked, "processExitSubmitted must clear the recentlyFilled entry")
+}
+
+// TestNormalOrderSubmitThenFill_NoSetEntry verifies the normal lifecycle
+// path leaves recentlyFilledOrders untouched: when OrderSubmitted runs
+// FIRST (the natural live-broker ordering), the fill finds its id
+// already tracked in PendingExitOrderIDs and takes the existing iter-1
+// cleanup branch — never marking the order as recently-filled.
+func TestNormalOrderSubmitThenFill_NoSetEntry(t *testing.T) {
+	contract := domain.Symbol("AMZN260202C00245000")
+	svc := newCopytradeExitService()
+	pos := seedOptionPosition(t, svc, contract, 5)
+	pos.ExitPending = false
+	pos.ExitOrderID = ""
+	pos.PendingExitOrderIDs = nil
+
+	// processExitSubmitted runs first (natural live ordering).
+	svc.processExitSubmitted(exitOrderSubmittedMsg{
+		Symbol:        contract,
+		BrokerOrderID: "ord-A",
+		Direction:     string(domain.DirectionCloseLong),
+	})
+	require.True(t, pos.ExitPending, "processExitSubmitted should set ExitPending")
+	require.Equal(t, "ord-A", pos.ExitOrderID, "processExitSubmitted should track ExitOrderID")
+	require.Contains(t, pos.PendingExitOrderIDs, "ord-A", "processExitSubmitted should track the id")
+
+	// Then the fill arrives.
+	svc.processFill(fillMsg{
+		Symbol:        contract,
+		Side:          "SELL",
+		Direction:     string(domain.DirectionCloseLong),
+		Price:         1.30,
+		Quantity:      2,
+		FilledAt:      time.Now(),
+		Strategy:      "copytrade_v1",
+		BrokerOrderID: "ord-A",
+	})
+
+	// Iter-1 cleanup: tracked id is dropped, ExitPending cleared because
+	// no peers remain.
+	assert.False(t, pos.ExitPending, "iter-1 cleanup should clear ExitPending")
+	assert.Equal(t, "", pos.ExitOrderID, "iter-1 cleanup should clear ExitOrderID")
+	assert.Empty(t, svc.recentlyFilledOrders, "normal ordering must NOT add an entry to recentlyFilledOrders")
+}
