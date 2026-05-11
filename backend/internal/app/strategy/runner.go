@@ -2587,7 +2587,7 @@ func (r *Runner) handleFill(ctx context.Context, event domain.Event) error {
 // handleRejection routes an OrderIntentRejected event to the matching strategy
 // instance. Only entry rejections (LONG, SHORT) are forwarded — exit rejections
 // don't need feedback because re-emission on the next bar is the correct retry.
-func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
+func (r *Runner) handleRejection(ctx context.Context, event domain.Event) error {
 	payload, ok := event.Payload.(domain.OrderIntentEventPayload)
 	if !ok {
 		return nil
@@ -2623,9 +2623,13 @@ func (r *Runner) handleRejection(_ context.Context, event domain.Event) error {
 	}
 
 	instCtx := &instanceContext{
-		now:    r.handlerNow(event, "handleRejection"),
-		logger: r.logger.With("instance_id", inst.ID().String(), "symbol", payload.Symbol),
-		emit:   func(_ any) error { return nil },
+		ctx:      ctx,
+		now:      r.handlerNow(event, "handleRejection"),
+		logger:   r.logger.With("instance_id", inst.ID().String(), "symbol", payload.Symbol),
+		emit:     func(_ any) error { return nil },
+		tenantID: r.tenantID,
+		envMode:  r.envMode,
+		runner:   r,
 	}
 
 	rejection := start.EntryRejection{
