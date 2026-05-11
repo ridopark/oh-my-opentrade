@@ -54,7 +54,8 @@ func TestComputeOptionEntryPrice_BuyPaysAskPlusHalfSpread(t *testing.T) {
 	mid := 6.00
 	intent := makeOptionEntryIntent(mid, false)
 
-	price := b.computeOptionEntryPrice(intent, false)
+	price, err := b.computeOptionEntryPrice(intent, false)
+	require.NoError(t, err)
 	expected := mid + mid*0.005
 	assert.InDelta(t, expected, price, 1e-9,
 		"BUY entry must pay mid + tiered half-spread (taker hits the ask)")
@@ -67,7 +68,8 @@ func TestComputeOptionEntryPrice_SellReceivesBidMinusHalfSpread(t *testing.T) {
 	mid := 6.00
 	intent := makeOptionEntryIntent(mid, true)
 
-	price := b.computeOptionEntryPrice(intent, true)
+	price, err := b.computeOptionEntryPrice(intent, true)
+	require.NoError(t, err)
 	expected := mid - mid*0.005
 	assert.InDelta(t, expected, price, 1e-9,
 		"SELL entry must receive mid - tiered half-spread (taker hits the bid)")
@@ -80,13 +82,15 @@ func TestComputeOptionEntryPrice_TieredSpreadWidensOTM(t *testing.T) {
 	// Cheap OTM option (<2.0) gets the widest tier at 1.5%.
 	cheapMid := 0.50
 	cheap := makeOptionEntryIntent(cheapMid, false)
-	cheapPrice := b.computeOptionEntryPrice(cheap, false)
+	cheapPrice, err := b.computeOptionEntryPrice(cheap, false)
+	require.NoError(t, err)
 	cheapSpread := (cheapPrice - cheapMid) / cheapMid
 
 	// Deep ITM (>=10.0) gets the tightest tier at 0.3%.
 	richMid := 15.00
 	rich := makeOptionEntryIntent(richMid, false)
-	richPrice := b.computeOptionEntryPrice(rich, false)
+	richPrice, err := b.computeOptionEntryPrice(rich, false)
+	require.NoError(t, err)
 	richSpread := (richPrice - richMid) / richMid
 
 	assert.InDelta(t, 0.015, cheapSpread, 1e-9, "cheap OTM must land in the widest tier")
@@ -118,7 +122,8 @@ func TestComputeOptionEntryPrice_LivePortBuyUsesAsk(t *testing.T) {
 	mid := 6.30 // intentionally different from both bid and ask
 	intent := makeOptionEntryIntent(mid, false)
 
-	price := b.computeOptionEntryPrice(intent, false)
+	price, err := b.computeOptionEntryPrice(intent, false)
+	require.NoError(t, err)
 	assert.Equal(t, 6.45, price, "buyer must pay live Ask when quote is available")
 }
 
@@ -129,7 +134,8 @@ func TestComputeOptionEntryPrice_LivePortSellUsesBid(t *testing.T) {
 	mid := 6.30
 	intent := makeOptionEntryIntent(mid, true)
 
-	price := b.computeOptionEntryPrice(intent, true)
+	price, err := b.computeOptionEntryPrice(intent, true)
+	require.NoError(t, err)
 	assert.Equal(t, 6.20, price, "short seller must receive live Bid when quote is available")
 }
 
@@ -143,11 +149,13 @@ func TestComputeOptionEntryPrice_FlagDisabledReturnsMid(t *testing.T) {
 	mid := 6.00
 	intent := makeOptionEntryIntent(mid, false)
 
-	price := b.computeOptionEntryPrice(intent, false)
+	price, err := b.computeOptionEntryPrice(intent, false)
+	require.NoError(t, err)
 	assert.Equal(t, mid, price, "flag-disabled entry must fill at mid (legacy behavior)")
 
 	// Short side too.
-	priceShort := b.computeOptionEntryPrice(makeOptionEntryIntent(mid, true), true)
+	priceShort, err := b.computeOptionEntryPrice(makeOptionEntryIntent(mid, true), true)
+	require.NoError(t, err)
 	assert.Equal(t, mid, priceShort, "flag-disabled SELL entry must also fill at mid")
 }
 

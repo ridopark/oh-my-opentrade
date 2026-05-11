@@ -84,12 +84,13 @@ def test_lowercase_ticker_normalized():
 
 
 def test_put_right():
-    s = _one("SPY 500p > 498.00")
+    # Puts use < (breakdown direction). Pre-existing tests had this wrong.
+    s = _one("SPY 500p < 498.00")
     assert s.right == "P"
 
 
 def test_uppercase_put_right():
-    s = _one("SPY 500P > 498.00")
+    s = _one("SPY 500P < 498.00")
     assert s.right == "P"
 
 
@@ -190,3 +191,97 @@ def test_returns_list_not_single():
 
 def test_empty_string_returns_empty_list():
     assert parse_message("") == []
+
+
+# ---------------------------------------------------------------------------
+# Indented-continuation grammar (puts under calls without restated ticker)
+# ---------------------------------------------------------------------------
+
+def test_indented_put_inherits_ticker_from_preceding_call():
+    msg = (
+        "SPY        739c      >      738.00\n"
+        "                 732p     <      733.00\n"
+    )
+    sigs = parse_message(msg)
+    assert len(sigs) == 2
+    assert sigs[0].ticker == "SPY" and sigs[0].right == "C" and sigs[0].strike == 739.0
+    assert sigs[1].ticker == "SPY" and sigs[1].right == "P" and sigs[1].strike == 732.0
+    assert sigs[1].trigger == 733.0
+
+
+def test_two_ticker_blocks_separated_by_blank_line():
+    msg = (
+        "SPY        739c      >      738.00\n"
+        "                 732p     <      733.00\n"
+        "\n"
+        "QQQ        714c      >      713.00\n"
+        "                  700p    <      703.00\n"
+    )
+    sigs = parse_message(msg)
+    tickers = [(s.ticker, s.right) for s in sigs]
+    assert tickers == [("SPY", "C"), ("SPY", "P"), ("QQQ", "C"), ("QQQ", "P")]
+
+
+def test_mixed_ticker_blocks_with_and_without_continuation():
+    # Mirrors the real 2026-05-11 morning post — SPY/QQQ have call+put, the
+    # other tickers are call-only.
+    msg = (
+        "SPY        739c      >      738.00\n"
+        "                 732p     <      733.00\n"
+        "\n"
+        "QQQ        714c      >      713.00\n"
+        "                  700p    <      703.00\n"
+        "\n"
+        "ASTS         85c      >      80.00\n"
+        "\n"
+        "GLD         450c      >     441.00\n"
+        "\n"
+        "TSLA        435c      >     430.00\n"
+    )
+    sigs = parse_message(msg)
+    assert len(sigs) == 7
+    assert [(s.ticker, s.right) for s in sigs] == [
+        ("SPY", "C"),
+        ("SPY", "P"),
+        ("QQQ", "C"),
+        ("QQQ", "P"),
+        ("ASTS", "C"),
+        ("GLD", "C"),
+        ("TSLA", "C"),
+    ]
+
+
+def test_orphan_continuation_before_any_ticker_is_skipped():
+    msg = (
+        "                 500p     <      498.00\n"
+        "SPY        739c      >      738.00\n"
+    )
+    sigs = parse_message(msg)
+    assert len(sigs) == 1
+    assert sigs[0].ticker == "SPY"
+
+
+def test_continuation_with_inconsistent_direction_is_skipped():
+    # Put with > is invalid per the grammar; the continuation line is
+    # silently skipped, the preceding call still parses.
+    msg = (
+        "SPY        739c      >      738.00\n"
+        "                 732p     >      733.00\n"
+    )
+    sigs = parse_message(msg)
+    assert len(sigs) == 1
+    assert sigs[0].ticker == "SPY" and sigs[0].right == "C"
+
+
+def test_continuation_after_commentary_still_inherits():
+    # last_ticker survives across non-matching commentary lines within a
+    # block. Author's posts don't currently use this shape, but defining the
+    # behavior pins it in case the format drifts.
+    msg = (
+        "SPY        739c      >      738.00\n"
+        "Holding the line at 738\n"
+        "                 732p     <      733.00\n"
+    )
+    sigs = parse_message(msg)
+    assert len(sigs) == 2
+    assert sigs[1].ticker == "SPY" and sigs[1].right == "P"

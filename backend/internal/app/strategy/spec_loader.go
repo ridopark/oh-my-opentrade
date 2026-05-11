@@ -123,6 +123,7 @@ type rawOptionsDefaults struct {
 type rawOptionsSection struct {
 	Enabled         bool                          `toml:"enabled"`
 	MaxContracts    int                           `toml:"max_contracts"`
+	PaperFillAtAsk  bool                          `toml:"paper_fill_at_ask"`
 	Defaults        rawOptionsDefaults            `toml:"defaults"`
 	RegimeOverrides map[string]rawOptionsDefaults `toml:"regime_overrides"`
 }
@@ -344,6 +345,7 @@ func loadV2(content, path string) (portstrategy.Spec, error) {
 			Defaults:        rawOptsToDomain(raw.Options.Defaults),
 			RegimeOverrides: overrides,
 			MaxContracts:    raw.Options.MaxContracts,
+			PaperFillAtAsk:  raw.Options.PaperFillAtAsk,
 		}
 	}
 

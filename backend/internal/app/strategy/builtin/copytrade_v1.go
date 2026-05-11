@@ -74,6 +74,7 @@ type copytradeConfig struct {
 	PendingTTLPaperSecs   int
 	PendingTTLLiveSecs    int
 	PinAuthorRef          bool
+	MaxSignalAgeSecs      int // BTO veto cutoff: skip if message age > this. 0 disables.
 }
 
 func parseCopytradeConfig(params map[string]any) copytradeConfig {
@@ -87,6 +88,7 @@ func parseCopytradeConfig(params map[string]any) copytradeConfig {
 		PendingTTLPaperSecs: getInt(params, "pending_ttl_paper_seconds", 0),
 		PendingTTLLiveSecs:  getInt(params, "pending_ttl_live_seconds", 0),
 		PinAuthorRef:        getBool(params, "pin_to_author_ref", true),
+		MaxSignalAgeSecs:    getInt(params, "max_signal_age_secs", 1800),
 	}
 	cfg.PartialFractions = parsePartialFractions(params["partial_fractions"])
 	// Longest-keyword first so "all out" matches before "out" (if ever added).
@@ -285,6 +287,17 @@ func (s *CopytradeStrategy) OnEvent(ctx start.Context, _ string, evt any, st sta
 }
 
 func (s *CopytradeStrategy) handleBTO(ctx start.Context, cst *copytradeState, sig start.CopytradeSignal) (start.State, []start.Signal, error) {
+	if cst.Config.MaxSignalAgeSecs > 0 && !sig.PostedAt.IsZero() && ctx != nil {
+		age := ctx.Now().Sub(sig.PostedAt)
+		if age > time.Duration(cst.Config.MaxSignalAgeSecs)*time.Second {
+			ctx.Logger().Warn("copytrade: BTO veto — signal age exceeds max",
+				"author", sig.Author,
+				"ticker", sig.Ticker,
+				"age_seconds", age.Seconds(),
+				"max_age_seconds", cst.Config.MaxSignalAgeSecs)
+			return cst, nil, nil
+		}
+	}
 	if cst.Config.MaxPositions > 0 && len(cst.Positions) >= cst.Config.MaxPositions {
 		if ctx != nil {
 			ctx.Logger().Warn("copytrade: dropping BTO — max_positions reached",

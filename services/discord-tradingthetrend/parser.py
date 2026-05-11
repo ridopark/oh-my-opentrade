@@ -37,6 +37,24 @@ _LINE_RE = re.compile(
     re.VERBOSE,
 )
 
+# Continuation grammar: STRIKE[CP] direction TRIGGER with NO ticker prefix.
+# The author posts puts as a second line under the call, indented and
+# without restating the ticker:
+#     SPY        739c      >      738.00
+#                      732p     <      733.00
+# The continuation line inherits the ticker from the most recent full match.
+_CONT_RE = re.compile(
+    r"""
+    ^\s*
+    (?P<strike>\d+(?:\.\d+)?)
+    (?P<right>[CcPp])
+    \s*(?P<direction>[<>])\s*
+    (?P<trigger>\d+(?:\.\d+)?)
+    \s*$
+    """,
+    re.VERBOSE,
+)
+
 
 @dataclass(frozen=True)
 class ParsedSignal:
@@ -58,11 +76,34 @@ def parse_message(text: str) -> list[ParsedSignal]:
     Inconsistent direction (C < or P >) is silently skipped.
     """
     out: list[ParsedSignal] = []
+    last_ticker = ""
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             continue
         m = _LINE_RE.match(line)
+        if m:
+            right = m.group("right").upper()
+            direction = m.group("direction")
+            if (right == "C" and direction != ">") or (right == "P" and direction != "<"):
+                continue
+            ticker = m.group("ticker").upper()
+            last_ticker = ticker
+            out.append(
+                ParsedSignal(
+                    ticker=ticker,
+                    right=right,
+                    strike=float(m.group("strike")),
+                    trigger=float(m.group("trigger")),
+                    raw_line=line,
+                )
+            )
+            continue
+        # Ticker-less continuation. Inherit the most recent full-match ticker.
+        # Orphan continuations (no preceding ticker line) are silently skipped.
+        if not last_ticker:
+            continue
+        m = _CONT_RE.match(line)
         if not m:
             continue
         right = m.group("right").upper()
@@ -71,7 +112,7 @@ def parse_message(text: str) -> list[ParsedSignal]:
             continue
         out.append(
             ParsedSignal(
-                ticker=m.group("ticker").upper(),
+                ticker=last_ticker,
                 right=right,
                 strike=float(m.group("strike")),
                 trigger=float(m.group("trigger")),
