@@ -104,6 +104,7 @@ async def run(
     max_stale_ticks: int,
     scroll_settle_secs: float,
     log: logging.Logger,
+    merge: bool = True,
 ) -> None:
     if not storage_state_path.exists():
         log.error("storage_state.json missing at %s — run bootstrap first", storage_state_path)
@@ -177,8 +178,33 @@ async def run(
 
         await browser.close()
 
-    records: list[dict] = []
+    # Merge mode: preload existing records so we accumulate history across
+    # successive scrapes. The 90-day cutoff bounds NEWLY scraped messages,
+    # but anything already on disk from a prior run stays put even if it
+    # falls outside the current window. This is how a daily scrape can grow
+    # the backtest dataset over time. --no-merge restores the legacy
+    # overwrite-with-fresh-window behavior.
+    existing: dict[str, dict] = {}
+    if merge and out_path.exists():
+        try:
+            with out_path.open() as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    mid = rec.get("id")
+                    if mid:
+                        existing[mid] = rec
+            log.info("merge: preloaded %d existing records from %s", len(existing), out_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning("merge: could not preload %s (%s) — proceeding with fresh records only", out_path, exc)
+            existing = {}
+
+    new_records = 0
     for mid, r in collected.items():
+        if mid in existing:
+            continue
         ts_iso = r.get("ts") or ""
         dt = None
         if ts_iso:
@@ -190,14 +216,15 @@ async def run(
             dt = snowflake_to_dt(mid)
         if dt is None or dt < cutoff:
             continue
-        records.append({
+        existing[mid] = {
             "id": mid,
             "author": r.get("author") or "",
             "ts": dt.astimezone(timezone.utc).isoformat(),
             "text": r.get("text") or "",
-        })
+        }
+        new_records += 1
 
-    records.sort(key=lambda r: r["ts"])
+    records = sorted(existing.values(), key=lambda r: r["ts"])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as fh:
         for rec in records:
@@ -205,8 +232,8 @@ async def run(
 
     if records:
         log.info(
-            "wrote %d records to %s (%s → %s)",
-            len(records), out_path, records[0]["ts"], records[-1]["ts"],
+            "wrote %d records to %s (%s → %s) — %d new this run",
+            len(records), out_path, records[0]["ts"], records[-1]["ts"], new_records,
         )
     else:
         log.warning("no records within cutoff window — %s is empty", out_path)
@@ -224,6 +251,8 @@ async def cli_main(log_name: str) -> None:
     ap.add_argument("--out", default="/app/state/history.jsonl", help="output JSONL path")
     ap.add_argument("--max-stale-ticks", type=int, default=6, help="stop after N scroll ticks with no new oldest id")
     ap.add_argument("--scroll-settle-secs", type=float, default=1.2, help="wait between scroll ticks")
+    ap.add_argument("--no-merge", dest="merge", action="store_false", default=True,
+                    help="overwrite the output file instead of merging with existing records (default: merge)")
     ap.add_argument("--log-level", default=os.getenv("LOG_LEVEL", "info"))
     args = ap.parse_args()
 
@@ -242,4 +271,5 @@ async def cli_main(log_name: str) -> None:
         max_stale_ticks=args.max_stale_ticks,
         scroll_settle_secs=args.scroll_settle_secs,
         log=log,
+        merge=args.merge,
     )
