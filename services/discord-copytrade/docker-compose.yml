@@ -60,4 +60,8 @@ services:
       STATE_DIR: /app/state
     volumes:
       - ./state:/app/state
-    entrypoint: ["python3", "-m", "scrape_history"]
+    # --out matches what the backtest loader expects. The backend defaults
+    # to services/discord-copytrade/state/history_90d.jsonl in backtest_handler.go.
+    # Without this override the scrape would write history.jsonl (the shared
+    # scraper default) and the backtest would keep reading a stale snapshot.
+    entrypoint: ["python3", "-m", "scrape_history", "--out", "/app/state/history_90d.jsonl"]
