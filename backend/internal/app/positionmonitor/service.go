@@ -705,6 +705,17 @@ func (s *Service) processFill(fill fillMsg) {
 			}
 			delete(s.positions, key)
 		} else {
+			// Clear partial-exit frac keys: the just-completed partial intent
+			// has fired its fill, so a subsequent chandelier/stop/new-STC
+			// trigger should size against the remaining position without
+			// reusing the prior partial's fraction. exit_eval.go preserves
+			// these keys across re-pegs of the same intent lifecycle; this
+			// is the lifecycle terminus for partial-fill cases.
+			if pos.CustomState != nil {
+				delete(pos.CustomState, "copytrade_exit_qty_frac")
+				delete(pos.CustomState, "tiered_tp_exit_qty_frac")
+				delete(pos.CustomState, "time_partial_exit_qty_frac")
+			}
 			// Keep ExitPending=true: the broker order is still active for the
 			// remaining quantity. Clearing it would let the tick loop fire
 			// another full-qty exit, causing double-sells.

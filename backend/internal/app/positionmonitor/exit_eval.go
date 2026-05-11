@@ -973,6 +973,12 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 	}
 
 	// Partial close: check if the evaluator set a qty fraction in CustomState.
+	// The partial fracKey stays on CustomState across re-peg/escalate cycles so
+	// the resubmitted limit re-derives the same partial size (the pre-fix
+	// deletion here caused re-pegs to upsize to the full remaining position,
+	// turning every unfilled copytrade STC partial into a full close on retry).
+	// processFill clears these keys after any exit fill so a subsequent
+	// chandelier/stop trigger doesn't get sized against a stale partial frac.
 	exitQty := pos.Quantity
 	for _, fracKey := range []string{"tiered_tp_exit_qty_frac", "time_partial_exit_qty_frac", "copytrade_exit_qty_frac"} {
 		if frac := pos.CustomState[fracKey]; frac > 0 && frac < 1.0 {
@@ -980,7 +986,6 @@ func (s *Service) triggerExit(pos *domain.MonitoredPosition, rule domain.ExitRul
 			if partial > 0 && partial < pos.Quantity {
 				exitQty = partial
 			}
-			delete(pos.CustomState, fracKey)
 			break
 		} else if frac >= 1.0 {
 			delete(pos.CustomState, fracKey)
